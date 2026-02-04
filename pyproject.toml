@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hrm-sn"
+version = "0.1.0"
+description = "Hierarchical Reasoning Model for Spatial Navigation (HRM-SN): package + experiment scaffolding."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+
+dependencies = [
+    "torch",
+    "pytorch-lightning",
+    "tensorboard",
+    "hydra-core",
+    "omegaconf",
+    "pydantic",
+    "numpy",
+    "tqdm",
+    "einops",
+    "pyyaml",
+    "huggingface_hub",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Keep configs within the package if you later move Hydra configs under src/hrm_sn/
+# (e.g., src/hrm_sn/config/**)
+hrm_sn = ["py.typed", "**/*.yaml", "**/*.yml"]
