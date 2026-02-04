@@ -24,6 +24,9 @@ dependencies = [
     "huggingface_hub",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest~=8.4.0", "black~=25.9.0", "flake8~=7.3.0", "mypy~=1.18.0"]
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 
@@ -34,3 +37,22 @@ where = ["src"]
 # Keep configs within the package if you later move Hydra configs under src/hrm_sn/
 # (e.g., src/hrm_sn/config/**)
 hrm_sn = ["py.typed", "**/*.yaml", "**/*.yml"]
+
+[tool.isort]
+profile = "black"
+line_length = 180
+known_first_party = ["hrm_sn"]
+
+[tool.black]
+line-length = 180
+target-version = ["py312"]
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py"]

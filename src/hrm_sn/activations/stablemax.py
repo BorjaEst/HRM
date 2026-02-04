@@ -2,8 +2,6 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import torch
 
-IGNORE_LABEL_ID = -100
-
 
 def s(x, epsilon=1e-30):
     return torch.where(x < 0, 1 / (1 - x + epsilon), x + 1)

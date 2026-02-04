@@ -6,8 +6,6 @@ from torch import nn
 
 from hrm_sn.activations.stablemax import log_stablemax
 
-IGNORE_LABEL_ID = -100
-
 
 def stablemax_cross_entropy(logits, labels, ignore_index: int = -100):
     logprobs = log_stablemax(logits.to(torch.float64), dim=-1)
