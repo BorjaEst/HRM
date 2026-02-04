@@ -340,7 +340,7 @@ for item in items:
 
 - Don't narrate the obvious (`# increments x by 1`)
 - Explain _why_, not _what_: `# Normalize to UTC to avoid timezone hell`
-- Docstrings for every function/class/module are **mandatory**
+- Docstrings are required for public functions/classes/modules; add them to private helpers when it improves clarity.
 - If I have to ask what your code does, you've failed
 
 **File Structure That Doesn't Suck**:

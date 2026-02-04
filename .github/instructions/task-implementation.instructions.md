@@ -46,7 +46,7 @@ Implementation progress MUST be tracked in a corresponding changes files located
 
 **Every implementation MUST:**
 
-- Follow existing workspace patterns and conventions (check `copilot/` folder for standards)
+- Follow existing workspace patterns and conventions (check `copilot/` folder for standards if present; otherwise prefer `.github/instructions/` and existing code patterns)
 - Implement complete, working functionality that meets all task requirements
 - Include appropriate error handling and validation
 - Use consistent naming conventions and code structure from the workspace
