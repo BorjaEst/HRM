@@ -1,7 +1,7 @@
 ---
 description: "Generate or update specification documents for new or existing functionality."
 name: "Specification"
-tools: ["read", "edit", "search", "web"]
+tools: ["vscode", "execute", "read", "edit", "search", "web"]
 ---
 
 # Specification mode instructions
@@ -22,7 +22,7 @@ A specification must define the requirements, constraints, and interfaces for th
 
 If asked, you will create the specification as a specification file.
 
-The specification should be saved in the [spec/](../../spec/) directory and named according to the following convention: `spec-[a-z0-9-]+.md`, where the name should be descriptive of the specification's content and starting with the highlevel purpose, which is one of [schema, tool, data, infrastructure, process, architecture, or design].
+The specification should be saved in the [/spec/](/spec/) directory and named according to the following convention: `spec-[a-z0-9-]+.md`, where the name should be descriptive of the specification's content and starting with the highlevel purpose, which is one of [schema, tool, data, infrastructure, process, architecture, or design].
 
 The specification file must be formatted in well formed Markdown.
 
@@ -123,7 +123,6 @@ tags: [Optional: List of relevant tags or categories, e.g., `infrastructure`, `p
 ```code
 // Code snippet or data example demonstrating the correct application of the guidelines, including edge cases
 ```
-````
 
 ## 10. Validation Criteria
 
@@ -133,7 +132,4 @@ tags: [Optional: List of relevant tags or categories, e.g., `infrastructure`, `p
 
 [Link to related spec 1]
 [Link to relevant external documentation]
-
-```
-
-```
+````
