@@ -1,7 +1,7 @@
 ---
-agent: "agent"
+agent: "SE: Tech Writer"
 description: "Update a markdown file section with an index/table of files from a specified folder."
-tools: ["search", "edit/editFiles"]
+tools: ["codebase", "search", "edit/editFiles"]
 ---
 
 # Update Markdown File Index

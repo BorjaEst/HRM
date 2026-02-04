@@ -1,10 +1,7 @@
 ---
 description: "Bootstrap canonical specs when spec/ is missing or empty; discover current repo structure, propose improvements, and ask for user inputs before writing."
-agent: "agent"
-tools:
-  - search
-  - search/codebase
-  - edit/editFiles
+agent: "Plan Mode - Strategic Planning & Architecture"
+tools: ["codebase", "search", "edit/editFiles", "web/fetch"]
 argument-hint: "Use when spec/ is missing, incomplete, or placeholder-only"
 ---
 

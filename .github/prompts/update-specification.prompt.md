@@ -1,23 +1,25 @@
 ---
-agent: "agent"
+agent: "Specification"
 description: "Update an existing /spec/spec-*.md file to reflect new requirements or code changes."
 tools:
-  - changes
-  - search/codebase
-  - edit/editFiles
-  - extensions
-  - web/fetch
-  - githubRepo
-  - openSimpleBrowser
-  - problems
-  - runTasks
-  - search
-  - search/searchResults
-  - runCommands/terminalLastCommand
-  - runCommands/terminalSelection
-  - testFailure
-  - usages
-  - vscodeAPI
+  [
+    "changes",
+    "codebase",
+    "edit/editFiles",
+    "extensions",
+    "web/fetch",
+    "githubRepo",
+    "openSimpleBrowser",
+    "problems",
+    "runTasks",
+    "search",
+    "search/searchResults",
+    "runCommands/terminalLastCommand",
+    "runCommands/terminalSelection",
+    "testFailure",
+    "usages",
+    "vscodeAPI",
+  ]
 ---
 
 # Update Specification

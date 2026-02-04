@@ -1,7 +1,7 @@
 ---
-agent: "agent"
+agent: "SE: Tech Writer"
 description: "Create or refresh README.md for this repository using the existing codebase as source of truth."
-tools: ["search", "web/fetch", "edit/editFiles"]
+tools: ["codebase", "search", "web/fetch", "edit/editFiles"]
 ---
 
 ## Role

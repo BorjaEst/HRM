@@ -1,6 +1,7 @@
 ---
 description: "Analyze repository folder structure and generate a folder-structure blueprint document."
-agent: "agent"
+agent: "Plan Mode - Strategic Planning & Architecture"
+tools: ["codebase", "search"]
 ---
 
 # Project Folder Structure Blueprint Generator

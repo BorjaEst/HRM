@@ -1,6 +1,7 @@
 ---
 description: "Analyze a repository and generate a technology stack blueprint (dependencies, tooling, patterns) in a chosen format."
-agent: "agent"
+agent: "Plan Mode - Strategic Planning & Architecture"
+tools: ["codebase", "search", "web/fetch"]
 ---
 
 # Comprehensive Technology Stack Blueprint Generator

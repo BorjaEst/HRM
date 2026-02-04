@@ -1,6 +1,7 @@
 ---
 description: "Scan a repository and generate exemplars.md with high-quality code examples grouped by a chosen categorization."
-agent: "agent"
+agent: "SE: Tech Writer"
+tools: ["codebase", "search", "edit/editFiles", "web/fetch"]
 ---
 
 # Code Exemplars Blueprint Generator

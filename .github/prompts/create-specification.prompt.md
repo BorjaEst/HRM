@@ -1,23 +1,7 @@
 ---
-agent: "agent"
+agent: "Specification"
 description: "Create a new specification file in /spec/ using the standard spec naming convention."
-tools:
-  - changes
-  - search/codebase
-  - edit/editFiles
-  - extensions
-  - web/fetch
-  - githubRepo
-  - openSimpleBrowser
-  - problems
-  - runTasks
-  - search
-  - search/searchResults
-  - runCommands/terminalLastCommand
-  - runCommands/terminalSelection
-  - testFailure
-  - usages
-  - vscodeAPI
+tools: ["changes", "codebase", "edit/editFiles", "extensions", "web/fetch", "githubRepo", "openSimpleBrowser", "problems", "runTasks", "search", "search/searchResults", "runCommands/terminalLastCommand", "runCommands/terminalSelection", "testFailure", "usages", "vscodeAPI"]
 ---
 
 # Create Specification
