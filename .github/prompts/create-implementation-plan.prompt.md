@@ -24,16 +24,6 @@ tools:
 
 # Create Implementation Plan
 
-## Preconditions (Strict Spec-First)
-
-Before producing any plan artifact, you MUST:
-
-1. Verify `spec/spec-manifest.toml` exists.
-2. Verify every file listed under `required.files` in that manifest exists.
-3. If any are missing, STOP and output exactly:
-
-- `Blocking: missing required specs: <comma-separated list of missing paths>`
-
 ## Primary Directive
 
 Your goal is to create a new implementation plan file for `${input:PlanPurpose}`. Your output must be machine-readable, deterministic, and structured for autonomous execution by other AI systems or humans.

@@ -24,16 +24,6 @@ tools:
 
 # Update Implementation Plan
 
-## Preconditions (Strict Spec-First)
-
-Before producing any plan artifact, you MUST:
-
-1. Verify `spec/spec-manifest.toml` exists.
-2. Verify every file listed under `required.files` in that manifest exists.
-3. If any are missing, STOP and output exactly:
-
-- `Blocking: missing required specs: <comma-separated list of missing paths>`
-
 ## Primary Directive
 
 You are an AI agent tasked with updating the implementation plan file `${file}` based on new or updated requirements. Your output must be machine-readable, deterministic, and structured for autonomous execution by other AI systems or humans.

@@ -8,16 +8,7 @@ tools: ["codebase", "search"]
 
 ## Preconditions (Strict Spec-First)
 
-Before producing any blueprint artifact, you MUST:
-
-1. Verify `spec/spec-manifest.toml` exists.
-2. Verify every file listed under `required.files` in that manifest exists.
-3. If any are missing, STOP and output exactly:
-
-- `Blocking: missing required specs: <comma-separated list of missing paths>`
-
-When the spec gate passes, describe the repo using the architecture taxonomy from
-`spec/spec-architecture.md`.
+Describe the repo using the architecture taxonomy from `spec/spec-architecture.md`.
 
 ## Inputs
 

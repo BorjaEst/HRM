@@ -1,19 +1,28 @@
 ---
 agent: "Specification"
 description: "Create a new specification file in /spec/ using the standard spec naming convention."
-tools: ["changes", "codebase", "edit/editFiles", "extensions", "web/fetch", "githubRepo", "openSimpleBrowser", "problems", "runTasks", "search", "search/searchResults", "runCommands/terminalLastCommand", "runCommands/terminalSelection", "testFailure", "usages", "vscodeAPI"]
+tools:
+  [
+    "changes",
+    "codebase",
+    "edit/editFiles",
+    "extensions",
+    "web/fetch",
+    "githubRepo",
+    "openSimpleBrowser",
+    "problems",
+    "runTasks",
+    "search",
+    "search/searchResults",
+    "runCommands/terminalLastCommand",
+    "runCommands/terminalSelection",
+    "testFailure",
+    "usages",
+    "vscodeAPI",
+  ]
 ---
 
 # Create Specification
-
-## Preconditions (Strict Spec-First)
-
-Before producing any spec artifact, you MUST:
-
-1. Verify `spec/spec-manifest.toml` exists.
-2. Verify every file listed under `required.files` in that manifest exists.
-3. If any are missing, STOP and output exactly:
-   - `Blocking: missing required specs: <comma-separated list of missing paths>`
 
 ## Canonical Specs vs. New Specs
 

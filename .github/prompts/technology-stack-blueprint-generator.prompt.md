@@ -8,14 +8,7 @@ tools: ["codebase", "search", "web/fetch"]
 
 ## Preconditions (Strict Spec-First)
 
-Before producing any technology blueprint artifact, you MUST:
-
-1. Verify `spec/spec-manifest.toml` exists.
-2. Verify every file listed under `required.files` in that manifest exists.
-3. If any are missing, STOP and output exactly:
-   - `Blocking: missing required specs: <comma-separated list of missing paths>`
-
-When the spec gate passes, prefer terminology and boundaries from `spec/spec-architecture.md`.
+Prefer terminology and boundaries from `spec/spec-architecture.md`.
 
 ## Inputs
 
