@@ -86,3 +86,38 @@ These are considered **legacy** relative to the target taxonomy. The specs gover
 
 - Do not impose generic web-app layering terms (controllers/services/repositories) unless the repo explicitly adopts them.
 - Do not require or assume external attention implementations (FlashAttention/xFormers). Use vanilla PyTorch attention.
+
+## The Canonical Structure for a Python + PyTorch + Lightning Project
+
+```plaintext
+my_project/
+│
+├── pyproject.toml
+├── src/
+│   └── my_project/
+│       ├── __init__.py
+│       ├── data/
+│       ├── models/
+│       ├── modules/
+│       ├── loss/
+│       ├── utils/
+│       ├── callbacks/
+│       ├── training/
+│       ├── figures/
+│       └── config/
+│
+└── experiments/
+    ├── exp01_baseline.py
+    ├── exp02_big_model.py
+    └── expXX_*.py
+```
+
+## What Should NOT Go in experiments/
+
+- LightningModules
+- DataModules
+- Loss functions
+- Utility functions
+- Model architectures
+- Reusable callbacks
+  These should live under src/ so they can be imported elsewhere.
