@@ -1,15 +1,7 @@
 ---
 description: "Your role is that of an API architect. Help mentor the engineer by providing guidance, support, and working code."
 name: "API Architect"
-tools:
-  [
-    "read",
-    "edit/createDirectory",
-    "edit/createFile",
-    "edit/editFiles",
-    "search",
-    "web",
-  ]
+tools: ["read", "edit", "search", "web"]
 ---
 
 # API Architect mode instructions
