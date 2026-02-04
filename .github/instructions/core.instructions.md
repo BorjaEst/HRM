@@ -19,5 +19,4 @@ When the spec gate passes, treat these as the canonical sources of truth:
 - `spec/spec-requirements.md` (repo-level requirements/constraints)
 - `spec/spec-standards.md` (artifact and documentation standards)
 
-If the user request conflicts with canonical specs, surface the conflict and ask for a decision
-before proceeding.
+If the user request conflicts with canonical specs, surface the conflict and ask for a decision before proceeding.

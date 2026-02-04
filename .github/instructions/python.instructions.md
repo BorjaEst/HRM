@@ -5,52 +5,44 @@ applyTo: "**/*.py"
 
 # Python Coding Conventions
 
-## Python Instructions
+This file contains Python-specific guidance and is intended to complement the
+language-agnostic rules in `.github/instructions/core.coding.instructions.md`.
 
-- Use docstrings for public functions/classes and add comments only where the intent is non-obvious.
-- Ensure functions have descriptive names and include type hints.
-- Provide docstrings following PEP 257 conventions.
-- Use the `typing` module for type annotations (e.g., `List[str]`, `Dict[str, int]`).
-- Break down complex functions into smaller, more manageable functions.
+## Style & Structure
 
-## General Instructions
+- Follow PEP 8 naming and layout conventions unless the surrounding codebase
+  establishes a different local pattern.
+- Keep functions small and single-purpose; extract helpers when logic becomes
+  hard to read.
+- Prefer explicit, readable code over clever one-liners.
 
-- Always prioritize readability and clarity.
-- For algorithm-related code, include explanations of the approach used.
-- Write code with good maintainability practices, including comments on why certain design decisions were made.
-- Handle edge cases and write clear exception handling.
-- For libraries or external dependencies, mention their usage and purpose in comments.
-- Use consistent naming conventions and follow language-specific best practices.
-- Write concise, efficient, and idiomatic code that is also easily understandable.
+## Docstrings & Comments
 
-## Code Style and Formatting
+- Public functions, classes, and modules should have docstrings that follow
+  PEP 257.
+- Use comments to explain non-obvious intent, invariants, or trade-offs; avoid
+  commenting every line or narrating the code.
 
-- Follow the **PEP 8** style guide for Python.
-- Maintain proper indentation (use 4 spaces for each level of indentation).
-- Ensure lines do not exceed 79 characters.
-- Place function and class docstrings immediately after the `def` or `class` keyword.
-- Use blank lines to separate functions, classes, and code blocks where appropriate.
+## Type Hints
 
-## Edge Cases and Testing
+- Add type hints for public APIs and for non-trivial internal functions.
+- Use `typing` constructs when needed (e.g., `Optional`, `Sequence`, `Mapping`),
+  and match the style already used in the repo.
 
-- Always include test cases for critical paths of the application.
-- Account for common edge cases like empty inputs, invalid data types, and large datasets.
-- Include comments for edge cases and the expected behavior in those cases.
-- Write unit tests for functions and document them with docstrings explaining the test cases.
+## Errors & Resource Handling
 
-## Example of Proper Documentation
+- Validate inputs at boundaries; raise specific exceptions with actionable
+  messages.
+- Prefer context managers (`with`) for files, locks, and other resources.
+- Avoid bare `except:`; catch the narrowest exception type possible.
 
-```python
-def calculate_area(radius: float) -> float:
-    """
-    Calculate the area of a circle given the radius.
+## Testing
 
-    Parameters:
-    radius (float): The radius of the circle.
+- If the repository already has a test harness, add or update unit tests for
+  changed behavior.
+- Do not introduce a new test framework or large test scaffolding unless the
+  task explicitly requires it.
 
-    Returns:
-    float: The area of the circle, calculated as π * radius^2.
-    """
-    import math
-    return math.pi * radius ** 2
-```
+1. **Ask User**: "Would you like me to generate test scripts for this implementation?"
+2. **Provide Summary**: Brief overview of implementation and any caveats
+3. **Validate Solution**: Ensure code actually runs and produces expected results
