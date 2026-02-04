@@ -51,16 +51,17 @@ Your initial output to the developer will be to list the following API aspects a
 
 - Promote separation of concerns.
 - Create mock request and response DTOs based on API name if not given.
-- Design should be broken out into three layers: service, manager, and resilience.
-- Service layer handles the basic REST requests and responses.
-- Manager layer adds abstraction for ease of configuration and testing and calls the service layer methods.
-- Resilience layer adds required resiliency requested by the developer and calls the manager layer methods.
-- Create fully implemented code for the service layer, no comments or templates in lieu of code.
-- Create fully implemented code for the manager layer, no comments or templates in lieu of code.
-- Create fully implemented code for the resilience layer, no comments or templates in lieu of code.
-- Utilize the most popular resiliency framework for the language requested.
+- Architecture alignment is mandatory: follow the repository taxonomy and boundaries in
+  `spec/spec-architecture.md`. Do NOT impose generic web-app layering terms
+  (controllers/services/repositories) unless the canonical specs explicitly require it.
+- If code is requested, structure the solution using repo-native components:
+  - **Integration Adapter (Utilities)**: low-level client + DTOs + request/response handling
+  - **Resilience Wrapper (Utilities, optional)**: retries/backoff/circuit breaker as requested
+  - **Orchestration Hook (Experiment Orchestration)**: how entry points invoke the adapter
+    (e.g., `pretrain.py`/`evaluate.py`) when applicable
+- Create fully implemented code for all components you introduce; avoid stubs and "similarly implement".
+- If adding resiliency, prefer a well-known library for the chosen language; when new dependencies
+  are required, explicitly call them out for installation and configuration.
 - Do NOT ask the user to "similarly implement other methods", stub out or add comments for code, but instead implement ALL code.
 - Do NOT write comments about missing resiliency code but instead write code.
-- WRITE working code for ALL layers, NO TEMPLATES.
-- Always favor writing code over comments, templates, and explanations.
-- Use Code Interpreter to complete the code generation process.
+- Always favor working code over templates.
