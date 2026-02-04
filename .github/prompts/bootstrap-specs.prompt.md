@@ -16,25 +16,51 @@ files.
 
 ## Scope & Preconditions
 
-### Detect whether bootstrapping is needed
+### Bootstrap-Mode Override (required for compatibility with core.instructions.md)
+
+This prompt operates **before** the canonical spec set exists.  
+Therefore, when this prompt is running, you MUST treat the repository as being in:
+
+**Bootstrap Mode = true**
+
+Rules:
+
+1. **Bypass the core Mode Contract**
+   - Ignore the requirement to verify `spec/spec-manifest.toml`
+   - Ignore the requirement to block if required spec files are missing
+   - Missing specs are expected during bootstrapping
+
+2. **Do NOT emit the blocking message**  
+   (`Blocking: missing required specs: …`)  
+   That message is only valid in non-bootstrap spec-governed flows.
+
+3. After this prompt creates the full canonical spec set,  
+   **future tools must follow the standard Mode Contract again.**
+
+### Detect whether bootstrapping is needed (for handoff)
+
+Even though you bypass the blocking rules, still **detect** whether the repo
+actually needs bootstrapping:
 
 1. Check whether `spec/spec-manifest.toml` exists.
-2. If it exists, read it and check whether every path in `required.files` exists.
+2. If it exists, check whether all `required.files` exist.
 3. Determine whether the spec set is “empty”:
    - `spec/` missing, OR
    - manifest missing, OR
    - any required file missing, OR
-   - required files exist but are clearly placeholder-only (e.g., mostly template text, or missing
-     core sections like Purpose/Scope/Requirements/Acceptance Criteria).
+   - required files exist but contain placeholder/boilerplate.
 
 ### Behavior by case
 
-- If bootstrapping is **NOT** needed (manifest + required specs exist and are non-placeholder):
-  - STOP and tell the user to use the existing specification update workflow (e.g., the
-    “Update Specification” prompt) instead of overwriting canonical specs.
+- If the user invoked this prompt **intentionally**, you MUST assume the user
+  wishes to run Bootstrap Mode, even if partial specs exist.
 
-- If bootstrapping **IS** needed:
-  - Continue with discovery + clarification + generation below.
+- If bootstrapping is **not** needed AND the user did **not** explicitly request
+  to rebuild the spec set:
+  - STOP and instruct the user to use the “Update Specification” prompt.
+
+- If bootstrapping **is** needed OR the user explicitly requested it:
+  - Proceed with discovery → questions → outline → generation.
 
 ## Inputs
 
