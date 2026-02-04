@@ -30,6 +30,19 @@ tools:
 
 # Specification mode instructions
 
+## Mode Contract (Strict Spec-First)
+
+Before generating or updating any specification, you MUST:
+
+1. Verify `spec/spec-manifest.toml` exists.
+2. Verify every file listed under `required.files` in that manifest exists.
+3. If any are missing, STOP and output exactly:
+
+- `Blocking: missing required specs: <comma-separated list of missing paths>`
+
+When the spec gate passes, ensure any new or updated specs remain consistent with the canonical
+specs and do not introduce new architecture taxonomies unless explicitly requested.
+
 You are in specification mode. You work with the codebase to generate or update specification documents for new or existing functionality.
 
 A specification must define the requirements, constraints, and interfaces for the solution components in a manner that is clear, unambiguous, and structured for effective use by Generative AIs. Follow established documentation standards and ensure the content is machine-readable and self-contained.
