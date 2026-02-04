@@ -1,30 +1,46 @@
 ---
 agent: "agent"
-description: "Update an existing specification file for the solution, optimized for Generative AI consumption based on new requirements or updates to any existing code."
+description: "Update an existing /spec/spec-*.md file to reflect new requirements or code changes."
 tools:
-  [
-    "changes",
-    "search/codebase",
-    "edit/editFiles",
-    "extensions",
-    "web/fetch",
-    "githubRepo",
-    "openSimpleBrowser",
-    "problems",
-    "runTasks",
-    "search",
-    "search/searchResults",
-    "runCommands/terminalLastCommand",
-    "runCommands/terminalSelection",
-    "testFailure",
-    "usages",
-    "vscodeAPI",
-  ]
+  - changes
+  - search/codebase
+  - edit/editFiles
+  - extensions
+  - web/fetch
+  - githubRepo
+  - openSimpleBrowser
+  - problems
+  - runTasks
+  - search
+  - search/searchResults
+  - runCommands/terminalLastCommand
+  - runCommands/terminalSelection
+  - testFailure
+  - usages
+  - vscodeAPI
 ---
 
 # Update Specification
 
+## Preconditions (Strict Spec-First)
+
+Before producing any spec artifact, you MUST:
+
+1. Verify `spec/spec-manifest.toml` exists.
+2. Verify every file listed under `required.files` in that manifest exists.
+3. If any are missing, STOP and output exactly:
+   - `Blocking: missing required specs: <comma-separated list of missing paths>`
+
+## Canonical Specs vs. New Specs
+
+- Canonical required specs are fixed filenames listed in `spec/spec-manifest.toml` (e.g.,
+  `spec/spec-architecture.md`). Do NOT rename canonical specs to match the `spec-<purpose>-<slug>.md`
+  convention.
+- All NEW (non-canonical) specs MUST follow `spec-<purpose>-<slug>.md`.
+
 Your goal is to update the existing specification file `${file}` based on new requirements or updates to any existing code.
+
+If `${file}` is not provided, request it and stop.
 
 The specification file must define the requirements, constraints, and interfaces for the solution components in a manner that is clear, unambiguous, and structured for effective use by Generative AIs. Follow established documentation standards and ensure the content is machine-readable and self-contained.
 
@@ -38,7 +54,11 @@ The specification file must define the requirements, constraints, and interfaces
 - Include examples and edge cases where applicable.
 - Ensure the document is self-contained and does not rely on external context.
 
-The specification should be saved in the [/spec/](/spec/) directory and named according to the following convention: `[a-z0-9-]+.md`, where the name should be descriptive of the specification's content and starting with the highlevel purpose, which is one of [schema, tool, data, infrastructure, process, architecture, or design].
+The specification MUST remain in the `/spec/` directory and MUST follow this filename convention:
+
+- `spec-<purpose>-<slug>.md`
+- `<purpose>` MUST be one of: `schema`, `tool`, `data`, `infrastructure`, `process`, `architecture`, `design`
+- `<slug>` MUST be lowercase alphanumeric with hyphens (`[a-z0-9-]+`)
 
 The specification file must be formatted in well formed Markdown.
 

@@ -2,27 +2,35 @@
 agent: "agent"
 description: "Create a new implementation plan file for new features, refactoring existing code or upgrading packages, design, architecture or infrastructure."
 tools:
-  [
-    "changes",
-    "search/codebase",
-    "edit/editFiles",
-    "extensions",
-    "web/fetch",
-    "githubRepo",
-    "openSimpleBrowser",
-    "problems",
-    "runTasks",
-    "search",
-    "search/searchResults",
-    "runCommands/terminalLastCommand",
-    "runCommands/terminalSelection",
-    "testFailure",
-    "usages",
-    "vscodeAPI",
-  ]
+  - changes
+  - search/codebase
+  - edit/editFiles
+  - extensions
+  - web/fetch
+  - githubRepo
+  - openSimpleBrowser
+  - problems
+  - runTasks
+  - search
+  - search/searchResults
+  - runCommands/terminalLastCommand
+  - runCommands/terminalSelection
+  - testFailure
+  - usages
+  - vscodeAPI
 ---
 
 # Create Implementation Plan
+
+## Preconditions (Strict Spec-First)
+
+Before producing any plan artifact, you MUST:
+
+1. Verify `spec/spec-manifest.toml` exists.
+2. Verify every file listed under `required.files` in that manifest exists.
+3. If any are missing, STOP and output exactly:
+
+- `Blocking: missing required specs: <comma-separated list of missing paths>`
 
 ## Primary Directive
 
@@ -62,11 +70,17 @@ Plans must consist of discrete, atomic phases containing executable tasks. Each 
 
 ## Output File Specifications
 
-- Save implementation plan files in `/plan/` directory
+- Save implementation plan files in `.copilot-tracking/plans/` directory
 - Use naming convention: `[purpose]-[component]-[version].md`
 - Purpose prefixes: `upgrade|refactor|feature|data|infrastructure|process|architecture|design`
 - Example: `upgrade-system-command-4.md`, `feature-auth-module-1.md`
 - File must be valid Markdown with proper front matter structure
+
+If the plan is intended to be executed by agents using this repository's execution framework,
+the plan SHOULD also reference:
+
+- `.copilot-tracking/details/` for per-task implementation details
+- `.copilot-tracking/changes/` for progressive change tracking
 
 ## Mandatory Template Structure
 

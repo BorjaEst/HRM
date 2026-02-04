@@ -1,133 +1,105 @@
 ---
-description: "Technology-agnostic prompt generator that creates customizable AI prompts for scanning codebases and identifying high-quality code exemplars. Supports multiple programming languages (.NET, Java, JavaScript, TypeScript, React, Angular, Python) with configurable analysis depth, categorization methods, and documentation formats to establish coding standards and maintain consistency across development teams."
+description: "Scan a repository and generate exemplars.md with high-quality code examples grouped by a chosen categorization."
 agent: "agent"
 ---
 
 # Code Exemplars Blueprint Generator
 
-## Configuration Variables
+## Preconditions (Strict Spec-First)
 
-${PROJECT_TYPE="Auto-detect|.NET|Java|JavaScript|TypeScript|React|Angular|Python|Other"} <!-- Primary technology -->
-${SCAN_DEPTH="Basic|Standard|Comprehensive"} <!-- How deeply to analyze the codebase -->
-${INCLUDE_CODE_SNIPPETS=true|false} <!-- Include actual code snippets in addition to file references -->
-${CATEGORIZATION="Pattern Type|Architecture Layer|File Type"} <!-- How to organize exemplars -->
-${MAX_EXAMPLES_PER_CATEGORY=3} <!-- Maximum number of examples per category -->
-${INCLUDE_COMMENTS=true|false} <!-- Include explanatory comments for each exemplar -->
+Before producing any exemplar artifact, you MUST:
 
-## Generated Prompt
+1. Verify `spec/spec-manifest.toml` exists.
+2. Verify every file listed under `required.files` in that manifest exists.
+3. If any are missing, STOP and output exactly:
 
-"Scan this codebase and generate an exemplars.md file that identifies high-quality, representative code examples. The exemplars should demonstrate our coding standards and patterns to help maintain consistency. Use the following approach:
+- `Blocking: missing required specs: <comma-separated list of missing paths>`
 
-### 1. Codebase Analysis Phase
+When the spec gate passes, use the architecture taxonomy from `spec/spec-architecture.md` when
+categorizing or describing exemplars.
 
-- ${PROJECT_TYPE == "Auto-detect" ? "Automatically detect primary programming languages and frameworks by scanning file extensions and configuration files" : `Focus on ${PROJECT_TYPE} code files`}
-- Identify files with high-quality implementation, good documentation, and clear structure
-- Look for commonly used patterns, architecture components, and well-structured implementations
-- Prioritize files that demonstrate best practices for our technology stack
-- Only reference actual files that exist in the codebase - no hypothetical examples
+## Inputs
 
-### 2. Exemplar Identification Criteria
+- `${input:PROJECT_TYPE}`: `Auto-detect|.NET|Java|JavaScript|TypeScript|React|Angular|Python|Other` (default: `Auto-detect`)
+- `${input:SCAN_DEPTH}`: `Basic|Standard|Comprehensive` (default: `Standard`)
+- `${input:INCLUDE_CODE_SNIPPETS}`: `true|false` (default: `false`)
+- `${input:CATEGORIZATION}`: `Pattern Type|Architecture Layer|File Type` (default: `Pattern Type`)
+- `${input:MAX_EXAMPLES_PER_CATEGORY}`: Integer (default: `3`)
+- `${input:INCLUDE_COMMENTS}`: `true|false` (default: `true`)
+- `${input:SPEC_MANIFEST_PATH}`: Path (default: `spec/spec-manifest.toml`)
 
-- Well-structured, readable code with clear naming conventions
-- Comprehensive comments and documentation
-- Proper error handling and validation
-- Adherence to design patterns and architectural principles
-- Separation of concerns and single responsibility principle
-- Efficient implementation without code smells
-- Representative of our standard approaches
+## Workflow
 
-### 3. Core Pattern Categories
+### 0) Strict Spec Preconditions (Block if missing)
 
-${PROJECT_TYPE == ".NET" || PROJECT_TYPE == "Auto-detect" ? `#### .NET Exemplars (if detected)
+- Verify `${input:SPEC_MANIFEST_PATH}` exists.
+- Read `${input:SPEC_MANIFEST_PATH}` and verify every file listed under `required.files` exists.
+- If any are missing, STOP and output exactly:
+  - `Blocking: missing required specs: <comma-separated list of missing paths>`
 
-- **Domain Models**: Find entities that properly implement encapsulation and domain logic
-- **Repository Implementations**: Examples of our data access approach
-- **Service Layer Components**: Well-structured business logic implementations
-- **Controller Patterns**: Clean API controllers with proper validation and responses
-- **Dependency Injection Usage**: Good examples of DI configuration and usage
-- **Middleware Components**: Custom middleware implementations
-- **Unit Test Patterns**: Well-structured tests with proper arrangement and assertions` : ""}
+When preconditions pass, treat these as canonical sources of truth:
 
-${(PROJECT_TYPE == "JavaScript" || PROJECT_TYPE == "TypeScript" || PROJECT_TYPE == "React" || PROJECT_TYPE == "Angular" || PROJECT_TYPE == "Auto-detect") ? `#### Frontend Exemplars (if detected)
+- `spec/spec-architecture.md` (architecture vocabulary and boundaries)
+- `spec/spec-requirements.md` (repo-level requirements/constraints)
+- `spec/spec-standards.md` (artifact and documentation standards)
 
-- **Component Structure**: Clean, well-structured components
-- **State Management**: Good examples of state handling
-- **API Integration**: Well-implemented service calls and data handling
-- **Form Handling**: Validation and submission patterns
-- **Routing Implementation**: Navigation and route configuration
-- **UI Components**: Reusable, well-structured UI elements
-- **Unit Test Examples**: Component and service tests` : ""}
+### 1) Codebase Analysis
 
-${PROJECT_TYPE == "Java" || PROJECT_TYPE == "Auto-detect" ? `#### Java Exemplars (if detected)
+- If `${input:PROJECT_TYPE}` is `Auto-detect`, detect primary languages/frameworks by scanning file extensions and configuration files.
+- Otherwise, focus analysis primarily on `${input:PROJECT_TYPE}` files.
+- Only reference files that exist in the repository. Do not invent files or paths.
 
-- **Entity Classes**: Well-designed JPA entities or domain models
-- **Service Implementations**: Clean service layer components
-- **Repository Patterns**: Data access implementations
-- **Controller/Resource Classes**: API endpoint implementations
-- **Configuration Classes**: Application configuration
-- **Unit Tests**: Well-structured JUnit tests` : ""}
+### 2) Exemplar Selection Criteria
 
-${PROJECT_TYPE == "Python" || PROJECT_TYPE == "Auto-detect" ? `#### Python Exemplars (if detected)
+Select files/regions that demonstrate:
 
-- **Class Definitions**: Well-structured classes with proper documentation
-- **API Routes/Views**: Clean API implementations
-- **Data Models**: ORM model definitions
-- **Service Functions**: Business logic implementations
-- **Utility Modules**: Helper and utility functions
-- **Test Cases**: Well-structured unit tests` : ""}
+- Readable structure and clear naming
+- Appropriate validation and error handling
+- Separation of concerns and single responsibility
+- Representative patterns used across the repo
 
-### 4. Architecture Layer Exemplars
+### 3) Category Guidance
 
-- **Presentation Layer**:
-  - User interface components
-  - Controllers/API endpoints
-  - View models/DTOs
-- **Business Logic Layer**:
-  - Service implementations
-  - Business logic components
-  - Workflow orchestration
-- **Data Access Layer**:
-  - Repository implementations
-  - Data models
-  - Query patterns
-- **Cross-Cutting Concerns**:
-  - Logging implementations
-  - Error handling
-  - Authentication/authorization
-  - Validation
+Primary categories MUST come from the architecture taxonomy defined in `spec/spec-architecture.md`.
 
-### 5. Exemplar Documentation Format
+- Use those taxonomy categories as the top-level structure in `exemplars.md`.
+- Do not introduce an alternate architecture framework (e.g., controllers/services/repositories)
+  unless the spec explicitly defines it.
 
-For each identified exemplar, document:
+Within each spec-defined category, you may add language/framework-specific subcategories that are
+grounded in the actual codebase.
 
-- File path (relative to repository root)
-- Brief description of what makes it exemplary
-- Pattern or component type it represents
-  ${INCLUDE_COMMENTS ? "- Key implementation details and coding principles demonstrated" : ""}
-${INCLUDE_CODE_SNIPPETS ? "- Small, representative code snippet (if applicable)" : ""}
+### 4) Cross-Cutting Exemplars
 
-${SCAN_DEPTH == "Comprehensive" ? `### 6. Additional Documentation
+Within each spec-defined category, call out cross-cutting patterns when exemplary:
 
-- **Consistency Patterns**: Note consistent patterns observed across the codebase
-- **Architecture Observations**: Document architectural patterns evident in the code
-- **Implementation Conventions**: Identify naming and structural conventions
-- **Anti-patterns to Avoid**: Note any areas where the codebase deviates from best practices` : ""}
+- Error handling and validation
+- Logging/telemetry
+- Reproducibility and determinism
+- Performance-sensitive code paths
 
-### ${SCAN_DEPTH == "Comprehensive" ? "7" : "6"}. Output Format
+## Output Expectations
 
-Create exemplars.md with:
+Create `exemplars.md` at the repository root with:
 
-1. Introduction explaining the purpose of the document
-2. Table of contents with links to categories
-3. Organized sections based on ${CATEGORIZATION}
-4. Up to ${MAX_EXAMPLES_PER_CATEGORY} exemplars per category
-5. Conclusion with recommendations for maintaining code quality
+1. An introduction describing the purpose of the exemplar set
+2. A table of contents
+3. Sections organized by `${input:CATEGORIZATION}`
+4. Up to `${input:MAX_EXAMPLES_PER_CATEGORY}` exemplars per category
 
-The document should be actionable for developers needing guidance on implementing new features consistent with existing patterns.
+For each exemplar, include:
 
-Important: Only include actual files from the codebase. Verify all file paths exist. Do not include placeholder or hypothetical examples.
-"
+- File path (relative)
+- Pattern/component type
+- Why it is exemplary
 
-## Expected Output
+If `${input:INCLUDE_COMMENTS}` is `true`, also include 2-5 concise bullets describing key implementation details.
 
-Upon running this prompt, GitHub Copilot will scan your codebase and generate an exemplars.md file containing real references to high-quality code examples in your repository, organized according to your selected parameters.
+If `${input:INCLUDE_CODE_SNIPPETS}` is `true`, include a small snippet (prefer 10-30 lines) and ensure it is copied exactly from the repository.
+
+If `${input:SCAN_DEPTH}` is `Comprehensive`, add a short final section:
+
+- Consistency patterns observed
+- Architecture observations
+- Conventions to follow
+- Anti-patterns to avoid (only if confirmed in the codebase)

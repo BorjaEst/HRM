@@ -1,31 +1,24 @@
 ---
 agent: "agent"
 description: "Update a markdown file section with an index/table of files from a specified folder."
-tools:
-  [
-    "changes",
-    "search/codebase",
-    "edit/editFiles",
-    "extensions",
-    "web/fetch",
-    "findTestFiles",
-    "githubRepo",
-    "openSimpleBrowser",
-    "problems",
-    "runCommands",
-    "runTasks",
-    "runTests",
-    "search",
-    "search/searchResults",
-    "runCommands/terminalLastCommand",
-    "runCommands/terminalSelection",
-    "testFailure",
-    "usages",
-    "vscodeAPI",
-  ]
+tools: ["search", "edit/editFiles"]
 ---
 
 # Update Markdown File Index
+
+## Preconditions (Strict Spec-First)
+
+Before producing any documentation artifact, you MUST:
+
+1. Verify `spec/spec-manifest.toml` exists.
+2. Verify every file listed under `required.files` in that manifest exists.
+3. If any are missing, STOP and output exactly:
+   - `Blocking: missing required specs: <comma-separated list of missing paths>`
+
+## Inputs
+
+- `${input:folder}`: Folder to index (required)
+- `${input:pattern}`: Glob pattern (default: `**/*`)
 
 Update markdown file `${file}` with an index/table of files from folder `${input:folder}`.
 
@@ -57,16 +50,16 @@ Choose format based on file types and existing content:
 ```markdown
 ## Files in ${folder}
 
-- [filename.ext](path/to/filename.ext) - Description
-- [filename2.ext](path/to/filename2.ext) - Description
+- filename.ext (path/to/filename.ext) - Description
+- filename2.ext (path/to/filename2.ext) - Description
 ```
 
 ### Option 2: Detailed Table
 
-| File                                   | Type      | Description |
-| -------------------------------------- | --------- | ----------- |
-| [filename.ext](path/to/filename.ext)   | Extension | Description |
-| [filename2.ext](path/to/filename2.ext) | Extension | Description |
+| File                                  | Type      | Description |
+| ------------------------------------- | --------- | ----------- |
+| filename.ext (path/to/filename.ext)   | Extension | Description |
+| filename2.ext (path/to/filename2.ext) | Extension | Description |
 
 ### Option 3: Categorized Sections
 
