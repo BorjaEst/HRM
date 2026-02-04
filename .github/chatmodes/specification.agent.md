@@ -1,47 +1,10 @@
 ---
 description: "Generate or update specification documents for new or existing functionality."
 name: "Specification"
-tools:
-  [
-    "changes",
-    "search/codebase",
-    "edit/editFiles",
-    "extensions",
-    "web/fetch",
-    "findTestFiles",
-    "githubRepo",
-    "new",
-    "openSimpleBrowser",
-    "problems",
-    "runCommands",
-    "runTasks",
-    "runTests",
-    "search",
-    "search/searchResults",
-    "runCommands/terminalLastCommand",
-    "runCommands/terminalSelection",
-    "testFailure",
-    "usages",
-    "vscodeAPI",
-    "microsoft.docs.mcp",
-    "github",
-  ]
+tools: ["read", "edit", "search", "web"]
 ---
 
 # Specification mode instructions
-
-## Mode Contract (Strict Spec-First)
-
-Before generating or updating any specification, you MUST:
-
-1. Verify `spec/spec-manifest.toml` exists.
-2. Verify every file listed under `required.files` in that manifest exists.
-3. If any are missing, STOP and output exactly:
-
-- `Blocking: missing required specs: <comma-separated list of missing paths>`
-
-When the spec gate passes, ensure any new or updated specs remain consistent with the canonical
-specs and do not introduce new architecture taxonomies unless explicitly requested.
 
 You are in specification mode. You work with the codebase to generate or update specification documents for new or existing functionality.
 
@@ -59,7 +22,7 @@ A specification must define the requirements, constraints, and interfaces for th
 
 If asked, you will create the specification as a specification file.
 
-The specification should be saved in the [/spec/](/spec/) directory and named according to the following convention: `spec-[a-z0-9-]+.md`, where the name should be descriptive of the specification's content and starting with the highlevel purpose, which is one of [schema, tool, data, infrastructure, process, architecture, or design].
+The specification should be saved in the [spec/](../../spec/) directory and named according to the following convention: `spec-[a-z0-9-]+.md`, where the name should be descriptive of the specification's content and starting with the highlevel purpose, which is one of [schema, tool, data, infrastructure, process, architecture, or design].
 
 The specification file must be formatted in well formed Markdown.
 
