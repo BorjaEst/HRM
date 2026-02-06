@@ -1,0 +1,40 @@
+# Default configuration for training the hierarchical reasoning model with ACT
+[architecture]
+halt_exploration_prob = 0.1
+halt_max_steps = 16
+
+H_cycles = 2
+L_cycles = 2
+
+H_layers = 4
+L_layers = 4
+
+hidden_size = 512
+num_heads = 8     # min(2, hidden_size // 64)
+expansion = 4
+
+# Loss 
+[loss]
+name = "ACTLossHead"
+function = "stablemax_cross_entropy"
+
+# Random seed for reproducibility
+[data]
+seed = 42
+path = "data/maze-30x30-hard-1k"
+
+# Embeddings config
+[embeddings]
+optimizer.lr = 1.0e-2
+optimizer.weight_decay = 0.1
+
+# Optimizer config
+[optimizer]
+lr = 1.0e-4
+weight_decay = 0.1
+betas = [0.9, 0.95]
+
+# Scheduler config
+[scheduler]
+warmup_steps = 2000
+min_ratio = 1.0

@@ -8,18 +8,17 @@ from adam_atan2_pytorch import AdamAtan2 as AdamATan2
 from pydantic import BaseModel, Field
 from torch import Tensor
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
 from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
 from hrm_sn.loss import LossConfig
 from hrm_sn.loss.act_head import ACTLossHead
-from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1Config 
-from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1
-from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
-from hrm_sn.training.schedules import CosineAnnealingLR, LinearLR, SchedulerConfig, SequentialLR
-from torch.optim.lr_scheduler import LRScheduler
+from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1, HierarchicalReasoningModel_ACTV1Config
 from hrm_sn.training.buffers import FifoBuffer
+from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
-from hrm_sn.training.rollout import RolloutLoop, EvaluationLoop
+from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
+from hrm_sn.training.schedules import CosineAnnealingLR, LinearLR, SchedulerConfig, SequentialLR
 
 # TODO: Move later to types.py
 Batch: TypeAlias = Tuple[str, Dict[str, torch.Tensor], int]  # (set_name, batch_dict, global_effective_batch_size)
@@ -166,6 +165,11 @@ class Model(L.LightningModule):
     def config(self) -> ModelConfig:
         return self._config
 
+    @property
+    def puzzle_emb(self):
+        """Access to puzzle embeddings for optimizer configuration."""
+        return self.model.puzzle_emb if hasattr(self.model, "puzzle_emb") else None
+
     def init_state(self, batch: Batch) -> ModelState:
         set_name, batch_dict, global_effective_bs = batch
         # TODO: properly use batch_dict and global_effective_bs if needed for state initialization
@@ -178,8 +182,23 @@ class Model(L.LightningModule):
         return optimizers, schedulers
 
     def build_optimizers(self) -> List[Optimizer]:
-        optimizer_main = AdamATan2(self.config.optim_main)
-        optimizer_emb = CastedSparseEmbeddingSignSGD_Distributed(self.config.optim_emb)
+        # Main optimizer: all parameters except puzzle embeddings
+        main_params = [p for n, p in self.model.named_parameters() if "puzzle_emb" not in n and p.requires_grad]
+
+        # Sparse embedding optimizer: puzzle embedding buffers/parameters
+        # The optimizer expects 3 params: local_ids (no grad), local_weights (with grad), and weights (no grad)
+        if hasattr(self.model, "puzzle_emb") and self.model.puzzle_emb is not None:
+            emb_params = [
+                self.model.puzzle_emb.local_ids,  # local_ids, no grad
+                self.model.puzzle_emb.local_weights,  # local_weights, requires_grad
+                self.model.puzzle_emb.weights,  # global_weights, no grad
+            ]
+            optimizer_emb = CastedSparseEmbeddingSignSGD_Distributed(emb_params, self.config.optim_emb)
+        else:
+            # No puzzle embeddings, create dummy optimizer with empty params
+            optimizer_emb = CastedSparseEmbeddingSignSGD_Distributed([], self.config.optim_emb)
+
+        optimizer_main = AdamATan2(main_params, self.config.optim_main)
 
         return [optimizer_main, optimizer_emb]
 
@@ -227,18 +246,17 @@ class Model(L.LightningModule):
             raise ValueError("RolloutLoop did not yield any steps, cannot proceed with training step.")
         self._train_carry = step.carry
 
-        # scaling: (1/global_batch_size) * loss, then backward TODO: use torch's built-in support for scaling 
+        # scaling: (1/global_batch_size) * loss, then backward TODO: use torch's built-in support for scaling
         loss = step.loss_sum / float(global_effective_bs)
         self.manual_backward(loss)
 
-        opt_main, opt_emb: Tuple[Optimizer, Optimizer] = self.optimizers()  # type: ignore
+        opt_main, opt_emb = self.optimizers()  # type: ignore
         opt_main.step(); opt_main.zero_grad(set_to_none=True)  # fmt: skip
         opt_emb.step(); opt_emb.zero_grad(set_to_none=True)  # fmt: skip
 
-        sch_main, sch_emb: Tuple[LRScheduler, LRScheduler] = self.lr_schedulers()  # type: ignore
+        sch_main, sch_emb = self.lr_schedulers()  # type: ignore
         sch_main.step()  # type: ignore
         sch_emb.step()  # type: ignore
-
 
         # log: ACTLossHead metrics are sums; normalize like legacy
         count = step.metrics["count"].clamp_min(1)
@@ -254,7 +272,7 @@ class Model(L.LightningModule):
 
         # Initialize carry/state on the first batch
         step = None
-        for step in EvaluationLoop( self.loss_head, batch_dict, return_keys=self.config.eval_save_outputs):
+        for step in EvaluationLoop(self.loss_head, batch_dict, return_keys=self.config.eval_save_outputs):
             pass  # TODO: Sum loss across steps?
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
