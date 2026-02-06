@@ -68,7 +68,10 @@ class FifoBuffer:
             if ch.start >= ch.rows[self.keys[0]].shape[0]:
                 self._chunks.popleft()
 
-        return {k: torch.cat(v, dim=0) if len(v) else torch.empty((0,), dtype=torch.int64) for k, v in out.items()}
+        # Return properly shaped empty tensors if no data
+        if n == 0:
+            return {k: torch.empty((0,), dtype=torch.int32) for k in self.keys}
+        return {k: torch.cat(v, dim=0) for k, v in out.items()}
 
     def _trim_to_capacity(self) -> None:
         """Simple policy: drop oldest chunks until within capacity."""

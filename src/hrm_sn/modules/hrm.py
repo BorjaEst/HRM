@@ -342,10 +342,10 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
 class HierarchicalReasoningModel_ACTV1(nn.Module):
     """ACT wrapper."""
 
-    def __init__(self, config_dict: dict):
+    def __init__(self, config: HierarchicalReasoningModel_ACTV1Config):
         super().__init__()
-        self.config = HierarchicalReasoningModel_ACTV1Config(**config_dict)
-        self.inner = HierarchicalReasoningModel_ACTV1_Inner(self.config)
+        self.config = config
+        self.inner = HierarchicalReasoningModel_ACTV1_Inner(config)
 
     @property
     def puzzle_emb(self):
