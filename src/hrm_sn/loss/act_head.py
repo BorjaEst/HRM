@@ -11,7 +11,7 @@ class ACTLossHead(nn.Module):
     def __init__(self, model: nn.Module, loss_type: str):
         super().__init__()
         self.model = model
-        self.loss_fn = globals()[loss_type]
+        self.loss_fn = globals()[loss_type]  # TODO: Avoid using globals() for loss function lookup, consider a more explicit mapping or factory pattern
 
     def initial_carry(self, *args, **kwargs):
         return self.model.initial_carry(*args, **kwargs)  # type: ignore
@@ -37,9 +37,7 @@ class ACTLossHead(nn.Module):
         with torch.no_grad():
             mask = labels != IGNORE_LABEL_ID
             loss_counts = mask.sum(-1)
-            loss_divisor = loss_counts.clamp_min(1).unsqueeze(
-                -1
-            )  # Avoid NaNs in division
+            loss_divisor = loss_counts.clamp_min(1).unsqueeze(-1)  # Avoid NaNs in division
 
             is_correct = mask & (torch.argmax(outputs["logits"], dim=-1) == labels)
             seq_is_correct = is_correct.sum(-1) == loss_counts
@@ -54,18 +52,13 @@ class ACTLossHead(nn.Module):
                     0,
                 ).sum(),
                 "exact_accuracy": (valid_metrics & seq_is_correct).sum(),
-                "q_halt_accuracy": (
-                    valid_metrics & ((outputs["q_halt_logits"] >= 0) == seq_is_correct)
-                ).sum(),
+                "q_halt_accuracy": (valid_metrics & ((outputs["q_halt_logits"] >= 0) == seq_is_correct)).sum(),
                 "steps": torch.where(valid_metrics, new_carry.steps, 0).sum(),
             }
 
         # Losses
         # FIXME: Assuming the batch is always full
-        lm_loss = (
-            self.loss_fn(outputs["logits"], labels, ignore_index=IGNORE_LABEL_ID)
-            / loss_divisor
-        ).sum()
+        lm_loss = (self.loss_fn(outputs["logits"], labels, ignore_index=IGNORE_LABEL_ID) / loss_divisor).sum()
         q_halt_loss = F.binary_cross_entropy_with_logits(
             outputs["q_halt_logits"],
             seq_is_correct.to(outputs["q_halt_logits"].dtype),

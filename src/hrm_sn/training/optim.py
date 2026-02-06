@@ -1,25 +1,58 @@
-from typing import Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist
+from adam_atan2_pytorch import AdamAtan2
+from pydantic import BaseModel, Field
 from torch.optim.optimizer import Optimizer, ParamsT
+
+__all__ = ["AdamATan2Config", "AdamATan2", "CastedSparseEmbeddingSignSGDConfig", "CastedSparseEmbeddingSignSGD_Distributed"]
+
+
+class AdamATan2Config(BaseModel, extra="forbid"):
+    lr: float = Field(
+        default=1e-4,
+        description="Base learning rate for the main optimizer (e.g. Adam). The learning rate for the puzzle embedding optimizer is set by `puzzle_emb_lr`.",
+    )
+    weight_decay: float = Field(
+        default=1e-2,
+        description="Weight decay for the main optimizer (e.g. Adam). The weight decay for the puzzle embedding optimizer is set by `emb_weight_decay`.",
+    )
+    betas: Tuple[float, float] = Field(
+        default=(0.9, 0.98),
+        description="Betas for Adam optimizer. The betas for the puzzle embedding optimizer are not set by default since Adam is not used for the puzzle embedding optimizer.",
+    )
+
+
+class AdamATan2(AdamAtan2):
+    def __init__(self, params: ParamsT, config: Optional[AdamATan2Config] = None):
+        config = config or AdamATan2Config()
+        super().__init__(params, **config.model_dump())
+
+
+class CastedSparseEmbeddingSignSGDConfig(BaseModel, extra="forbid"):
+    lr: float = Field(
+        default=1e-3,
+        ge=0.0,
+        le=1.0,
+        description="Base learning rate for the puzzle embedding optimizer (e.g. SignSGD). The learning rate for the main optimizer is set by `lr`.",
+    )
+    weight_decay: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Weight decay for the puzzle embedding optimizer (e.g. SignSGD). The weight decay for the main optimizer is set by `weight_decay`.",
+    )
+    world_size: int = Field(
+        default=1,
+        description="World size for distributed training. If greater than 1, the optimizer performs all-gather and unique operations across all processes to ensure consistent updates of the sparse embedding weights.",
+    )
 
 
 class CastedSparseEmbeddingSignSGD_Distributed(Optimizer):
-    def __init__(
-        self,
-        params: ParamsT,
-        world_size: int,
-        lr: Union[float, torch.Tensor] = 1e-3,
-        weight_decay: float = 1e-2,
-    ):
-        if not 0.0 <= lr:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        if not 0.0 <= weight_decay:
-            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-
-        defaults = dict(lr=lr, weight_decay=weight_decay, world_size=world_size)
-        super().__init__(params, defaults)
+    def __init__(self, params: ParamsT, config: Optional[CastedSparseEmbeddingSignSGDConfig] = None):
+        config = config or CastedSparseEmbeddingSignSGDConfig()
+        super().__init__(params, config.model_dump())
 
     @torch.no_grad
     def step(self, closure=None):  # type: ignore
@@ -76,9 +109,7 @@ class CastedSparseEmbeddingSignSGD_Distributed(Optimizer):
                 dtype=local_weights_grad.dtype,
                 device=local_weights_grad.device,
             )
-            all_ids = torch.empty(
-                world_size * N, dtype=local_ids.dtype, device=local_ids.device
-            )
+            all_ids = torch.empty(world_size * N, dtype=local_ids.dtype, device=local_ids.device)
 
             dist.all_gather_into_tensor(all_weights_grad, local_weights_grad)
             dist.all_gather_into_tensor(all_ids, local_ids)

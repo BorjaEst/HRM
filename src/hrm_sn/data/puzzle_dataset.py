@@ -2,64 +2,29 @@ import json
 import os
 
 import numpy as np
-import pydantic
 import torch
+from pydantic import BaseModel, Field
 from torch.utils.data import IterableDataset, get_worker_info
 
 from hrm_sn.data.metadata import PuzzleDatasetMetadata
 from hrm_sn.loss.act_head import IGNORE_LABEL_ID
 
 
-def _sample_batch(
-    rng: np.random.Generator,
-    group_order: np.ndarray,
-    puzzle_indices: np.ndarray,
-    group_indices: np.ndarray,
-    start_index: int,
-    global_batch_size: int,
-):
-    # Pack examples into a full batch
-    batch = []
-    batch_puzzle_indices = []
-    current_size = 0
+class PuzzleDatasetSettings(BaseModel):
+    # TODO: Review responsibilities with PuzzleDatamoduleSettings, maybe merge into one
+    seed: int = Field(42, description="Random seed for reproducibility.")
+    dataset_path: str = Field(..., description="Path to the dataset directory containing `train/`, `test/`, etc. subdirectories.")
+    global_batch_size: int = Field(..., description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // num_replicas`.")
+    test_set_mode: bool = Field(False, description="Iterate in test set mode through the dataset without randomization, yields puzzle identifiers for each batch.")
 
-    while (start_index < group_order.size) and (current_size < global_batch_size):
-        # Pick a group and a puzzle from that group
-        group_id = group_order[start_index]
-        puzzle_id = rng.integers(group_indices[group_id], group_indices[group_id + 1])
-        start_index += 1
+    epochs_per_iter: int = Field(1, description="Epochs to iterate in each iteration. This is used to reduce overhead of randomization and shuffling.")
 
-        # Get range of the puzzle
-        puzzle_start = puzzle_indices[puzzle_id]
-        puzzle_size = int(puzzle_indices[puzzle_id + 1] - puzzle_start)
-
-        append_size = min(puzzle_size, global_batch_size - current_size)
-
-        # Put into batch
-        batch_puzzle_indices.append(np.full(append_size, puzzle_id, dtype=np.int32))
-        batch.append(
-            puzzle_start + np.random.choice(puzzle_size, append_size, replace=False)
-        )
-
-        current_size += append_size
-
-    return start_index, np.concatenate(batch), np.concatenate(batch_puzzle_indices)
-
-
-class PuzzleDatasetConfig(pydantic.BaseModel):
-    seed: int
-    dataset_path: str
-    global_batch_size: int
-    test_set_mode: bool
-
-    epochs_per_iter: int  # Batch X epochs in an iteration to reduce overhead.
-
-    rank: int
-    num_replicas: int
+    rank: int = Field(0, description="Rank of the current process for distributed training. Should be in the range [0, num_replicas - 1].")
+    num_replicas: int = Field(1, description="Total number of processes for distributed training. The dataset is split across these processes according to `rank`.")
 
 
 class PuzzleDataset(IterableDataset):
-    def __init__(self, config: PuzzleDatasetConfig, split: str = "train"):
+    def __init__(self, config: PuzzleDatasetSettings, split: str = "train"):
         super().__init__()
         self.config = config
         self.split = split
@@ -69,18 +34,14 @@ class PuzzleDataset(IterableDataset):
         assert (
             self.config.global_batch_size % self.config.num_replicas == 0
         ), f"Global batch size {self.config.global_batch_size} must be multiples of nodes {self.config.num_replicas}."
-        self.local_batch_size = (
-            self.config.global_batch_size // self.config.num_replicas
-        )
+        self.local_batch_size = self.config.global_batch_size // self.config.num_replicas
 
         # State
         self._data = None
         self._iters = 0
 
     def _load_metadata(self) -> PuzzleDatasetMetadata:
-        with open(
-            os.path.join(self.config.dataset_path, self.split, "dataset.json"), "r"
-        ) as f:
+        with open(os.path.join(self.config.dataset_path, self.split, "dataset.json"), "r") as f:
             return PuzzleDatasetMetadata(**json.load(f))
 
     def _lazy_load_dataset(self):
@@ -118,9 +79,7 @@ class PuzzleDataset(IterableDataset):
 
         # Convert ignore label IDs
         if self.metadata.ignore_label_id is not None:
-            batch["labels"][
-                batch["labels"] == self.metadata.ignore_label_id
-            ] = IGNORE_LABEL_ID
+            batch["labels"][batch["labels"] == self.metadata.ignore_label_id] = IGNORE_LABEL_ID
 
         # Pad
         if batch["puzzle_identifiers"].size < self.local_batch_size:
@@ -151,9 +110,7 @@ class PuzzleDataset(IterableDataset):
             start_index = 0
             while start_index < total_examples:
                 # Compute indices
-                end_index = min(
-                    total_examples, start_index + self.config.global_batch_size
-                )
+                end_index = min(total_examples, start_index + self.config.global_batch_size)
 
                 local_start = start_index + self.config.rank * self.local_batch_size
                 local_end = min(
@@ -163,17 +120,9 @@ class PuzzleDataset(IterableDataset):
 
                 # Get batch of examples, and also puzzle IDs
                 puzzle_indices = []
-                puzzle_index = (
-                    np.searchsorted(
-                        dataset["puzzle_indices"], local_start, side="right"
-                    )
-                    - 1
-                )
+                puzzle_index = np.searchsorted(dataset["puzzle_indices"], local_start, side="right") - 1
                 for i in range(local_start, local_end):
-                    while (
-                        puzzle_index + 1 < len(dataset["puzzle_indices"])
-                        and i >= dataset["puzzle_indices"][puzzle_index + 1]
-                    ):
+                    while puzzle_index + 1 < len(dataset["puzzle_indices"]) and i >= dataset["puzzle_indices"][puzzle_index + 1]:
                         puzzle_index += 1
 
                     puzzle_indices.append(puzzle_index)
@@ -182,9 +131,7 @@ class PuzzleDataset(IterableDataset):
                     {
                         "inputs": dataset["inputs"][local_start:local_end],
                         "labels": dataset["labels"][local_start:local_end],
-                        "puzzle_identifiers": dataset["puzzle_identifiers"][
-                            puzzle_indices
-                        ],
+                        "puzzle_identifiers": dataset["puzzle_identifiers"][puzzle_indices],
                     }
                 )
 
@@ -199,16 +146,9 @@ class PuzzleDataset(IterableDataset):
             self._iters += 1
 
             # Randomly shuffle groups
-            rng = np.random.Generator(
-                np.random.Philox(seed=self.config.seed + self._iters)
-            )
+            rng = np.random.Generator(np.random.Philox(seed=self.config.seed + self._iters))
 
-            group_order = np.concatenate(
-                [
-                    rng.permutation(dataset["group_indices"].size - 1)
-                    for _i in range(self.config.epochs_per_iter)
-                ]
-            )
+            group_order = np.concatenate([rng.permutation(dataset["group_indices"].size - 1) for _i in range(self.config.epochs_per_iter)])
             start_index = 0
 
             while start_index < group_order.size:
@@ -222,31 +162,19 @@ class PuzzleDataset(IterableDataset):
                 )
 
                 # Select current rank and collate
-                global_effective_batch_size = (
-                    batch_puzzle_indices.size
-                )  # Global effective batch size, excluding pads
+                global_effective_batch_size = batch_puzzle_indices.size  # Global effective batch size, excluding pads
 
                 # Drop last batch
                 if global_effective_batch_size < self.config.global_batch_size:
                     break
 
-                batch_indices = batch_indices[
-                    self.config.rank
-                    * self.local_batch_size : (self.config.rank + 1)
-                    * self.local_batch_size
-                ]
-                batch_puzzle_indices = batch_puzzle_indices[
-                    self.config.rank
-                    * self.local_batch_size : (self.config.rank + 1)
-                    * self.local_batch_size
-                ]
+                batch_indices = batch_indices[self.config.rank * self.local_batch_size : (self.config.rank + 1) * self.local_batch_size]
+                batch_puzzle_indices = batch_puzzle_indices[self.config.rank * self.local_batch_size : (self.config.rank + 1) * self.local_batch_size]
                 batch = self._collate_batch(
                     {
                         "inputs": dataset["inputs"][batch_indices],
                         "labels": dataset["labels"][batch_indices],
-                        "puzzle_identifiers": dataset["puzzle_identifiers"][
-                            batch_puzzle_indices
-                        ],
+                        "puzzle_identifiers": dataset["puzzle_identifiers"][batch_puzzle_indices],
                     }
                 )
 
@@ -254,9 +182,7 @@ class PuzzleDataset(IterableDataset):
 
     def __iter__(self):
         worker_info = get_worker_info()
-        assert (
-            worker_info is None or worker_info.num_workers == 1
-        ), "Multithreaded data loading is not currently supported."
+        assert worker_info is None or worker_info.num_workers == 1, "Multithreaded data loading is not currently supported."
 
         self._lazy_load_dataset()
 
@@ -265,3 +191,37 @@ class PuzzleDataset(IterableDataset):
             yield from self._iter_test()
         else:
             yield from self._iter_train()
+
+
+def _sample_batch(
+    rng: np.random.Generator,
+    group_order: np.ndarray,
+    puzzle_indices: np.ndarray,
+    group_indices: np.ndarray,
+    start_index: int,
+    global_batch_size: int,
+):
+    # Pack examples into a full batch
+    batch = []
+    batch_puzzle_indices = []
+    current_size = 0
+
+    while (start_index < group_order.size) and (current_size < global_batch_size):
+        # Pick a group and a puzzle from that group
+        group_id = group_order[start_index]
+        puzzle_id = rng.integers(group_indices[group_id], group_indices[group_id + 1])
+        start_index += 1
+
+        # Get range of the puzzle
+        puzzle_start = puzzle_indices[puzzle_id]
+        puzzle_size = int(puzzle_indices[puzzle_id + 1] - puzzle_start)
+
+        append_size = min(puzzle_size, global_batch_size - current_size)
+
+        # Put into batch
+        batch_puzzle_indices.append(np.full(append_size, puzzle_id, dtype=np.int32))
+        batch.append(puzzle_start + np.random.choice(puzzle_size, append_size, replace=False))
+
+        current_size += append_size
+
+    return start_index, np.concatenate(batch), np.concatenate(batch_puzzle_indices)
