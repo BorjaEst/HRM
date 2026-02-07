@@ -21,7 +21,7 @@ from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
 from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConfig, SequentialLR
 
 # TODO: Move later to types.py
-Batch: TypeAlias = Tuple[str, Dict[str, torch.Tensor], int]  # (set_name, batch_dict, global_effective_batch_size)
+Batch: TypeAlias = Tuple[str, Dict[str, Tensor], int]  # (set_name, batch_dict, global_effective_batch_size)
 Device = torch.device
 
 
@@ -67,9 +67,9 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
 @dataclass
 class ModelState:
     carry: Any  # Model carry/state that persists across batches, initialized as None and set by the first batch
-    q_halt_logits: Optional[torch.Tensor] = None  # Optional tensor of shape (batch_size,) with the halt logits for the question, used for loss computation and evaluation
-    q_continue_logits: Optional[torch.Tensor] = None  # Optional tensor of shape (batch_size,) with the continue logits for the question, used for loss computation and evaluation
-    steps: Optional[torch.Tensor] = None  # Optional tensor of shape (batch_size,) with the number of steps taken for each example, used for evaluation
+    q_halt_logits: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the halt logits for the question, used for loss computation and evaluation
+    q_continue_logits: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the continue logits for the question, used for loss computation and evaluation
+    steps: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the number of steps taken for each example, used for evaluation
 
     # Metadata
     step_id: Optional[int] = None  # Optional step identifier
@@ -125,12 +125,12 @@ class Model(L.LightningModule):
         main_params = [p for n, p in self.model.named_parameters() if "puzzle_emb" not in n and p.requires_grad]
 
         # Sparse embedding optimizer: puzzle embedding buffers/parameters
-        # The optimizer expects 3 params: local_ids (no grad), local_weights (with grad), and weights (no grad)
+        # The optimizer expects 3 params: local_indices (no grad), local_weight (with grad), and weight (no grad)
         if hasattr(self.model, "puzzle_emb") and self.model.puzzle_emb is not None:
             emb_params = [
-                self.model.puzzle_emb.local_ids,  # local_ids, no grad
-                self.model.puzzle_emb.local_weights,  # local_weights, requires_grad
-                self.model.puzzle_emb.weights,  # global_weights, no grad
+                self.model.puzzle_emb.local_indices,  # local_indices, no grad
+                self.model.puzzle_emb.local_weight,  # local_weight, requires_grad
+                self.model.puzzle_emb.weight,  # global_weights, no grad
             ]
             optimizer_emb = CastedSparseEmbeddingSignSGD_Distributed(emb_params, self.config.optim_emb)
         else:

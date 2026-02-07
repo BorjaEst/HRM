@@ -43,10 +43,6 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         default=None,
         description="Run name. If not set, it defaults to `<arch_name> <random_slug>` (e.g. `HrmV1 2x128 4L 16H 0.1D ACT-torch cool-slug`).",
     )
-    checkpoint_path: Optional[str] = Field(
-        default=None,
-        description="Path to save checkpoints and logs. If not set, it defaults to `checkpoints/<project_name>/<run_name>`.",
-    )
 
     # =========================================================================
     # Model architecture and data
@@ -128,9 +124,9 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # =========================================================================
     # Extra options for training control (e.g., resuming from checkpoint)
     # =========================================================================
-    ckpt_path: Optional[Path] = Field(
+    checkpoint_path: Optional[str] = Field(
         default=None,
-        description="Path to checkpoint file to resume from.",
+        description="Path to save checkpoints and logs. If not set, it defaults to `checkpoints/<project_name>/<run_name>`.",
     )
     checkpoint_every_eval: bool = Field(
         default=False,
