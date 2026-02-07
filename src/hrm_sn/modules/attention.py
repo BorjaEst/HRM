@@ -1,8 +1,7 @@
 from typing import Optional
 
-import torch
 import torch.nn.functional as F
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from torch import Tensor, nn
 
 from hrm_sn.modules.projections import CastedLinear
@@ -11,16 +10,11 @@ from hrm_sn.types import CosSin
 
 
 class AttentionConfig(BaseModel, extra="forbid"):
-    hidden_size: int = Field(
+
+    embed_dim: int = Field(
         ...,
         frozen=True,
         description="Hidden size of the attention module.",
-    )
-
-    head_dim: int = Field(
-        ...,
-        frozen=True,
-        description="Dimension of each attention head.",
     )
     num_heads: int = Field(
         ...,
@@ -28,15 +22,32 @@ class AttentionConfig(BaseModel, extra="forbid"):
         description="Number of attention heads.",
     )
 
-    num_key_value_heads: int = Field(
+    num_kv_heads: int = Field(
         ...,
         frozen=True,
-        description="Number of key/value heads. If different from num_heads, keys and values are shared across heads.",
+        description="Number of k/v heads. If different from num_heads, keys and values are shared across heads.",
     )
-    causal: bool = Field(
+    is_causal: bool = Field(
         default=False,
         description="Whether to apply causal masking in attention.",
     )
+
+    @field_validator("embed_dim")
+    def _check_embed_dim(cls, v, values):
+        num_heads = values.get("num_heads")
+        if num_heads is not None and v % num_heads != 0:
+            raise ValueError(f"embed_dim ({v}) must be divisible by num_heads ({num_heads}).")
+        return v
+
+    @property
+    def head_dim(self) -> int:
+        """Dimension of each attention head."""
+        return self.embed_dim // self.num_heads
+
+    @property
+    def output_size(self) -> int:
+        """Output dimension of the attention module."""
+        return self.head_dim * self.num_heads
 
 
 class Attention(nn.Module):
@@ -44,66 +55,63 @@ class Attention(nn.Module):
         super().__init__()
         self._config = config
 
-        self._qkv_out = (config.num_heads + 2 * config.num_key_value_heads) * config.head_dim
-        self.qkv_proj = CastedLinear(config.hidden_size, self._qkv_out, bias=False)
-        self.o_proj = CastedLinear(self.output_size, config.hidden_size, bias=False)
+        self._qkv_head_count = config.num_heads + 2 * config.num_kv_heads
+        self._qkv_proj_out_dim = self._qkv_head_count * config.head_dim
+        self.in_proj = CastedLinear(config.embed_dim, self._qkv_proj_out_dim, bias=False)
+        self.out_proj = CastedLinear(config.output_size, config.embed_dim, bias=False)
 
     @property
     def config(self) -> AttentionConfig:
         return self._config
 
-    @property
-    def output_size(self) -> int:
-        return self.config.head_dim * self.config.num_heads
+    def _compute_qkv(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Project and split inputs into q, k, and v tensors."""
+        config, qkv_proj_out_dim = self.config, self._qkv_proj_out_dim
+        batch_size, seq_len, _ = x.shape
 
-    def _project_qkv(self, hidden_states: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """Project and split inputs into query, key, and value tensors."""
-        config, qkv_out = self.config, self._qkv_out
-        batch_size, seq_len, _ = hidden_states.shape
-
-        # hidden_states: [bs, seq_len, hidden_size]
-        qkv = self.qkv_proj(hidden_states)
+        # hidden_states: [bs, seq_len, embed_dim]
+        qkv = self.in_proj(x)
 
         # Split head
-        qkv = qkv.view(batch_size, seq_len, qkv_out, config.head_dim)
-        query = qkv[:, :, : config.num_heads]
-        key = qkv[:, :, config.num_heads : config.num_heads + config.num_key_value_heads]
-        value = qkv[:, :, config.num_heads + config.num_key_value_heads :]
-        return query, key, value
+        qkv = qkv.view(batch_size, seq_len, qkv_proj_out_dim, config.head_dim)
+        q = qkv[:, :, : config.num_heads]
+        k = qkv[:, :, config.num_heads : config.num_heads + config.num_kv_heads]
+        v = qkv[:, :, config.num_heads + config.num_kv_heads :]
+        return q, k, v
 
-    def _apply_rope(self, query: Tensor, key: Tensor, cos_sin: Optional[CosSin]) -> tuple[Tensor, Tensor]:
+    def _apply_rope(self, q: Tensor, k: Tensor, cos_sin: Optional[CosSin]) -> tuple[Tensor, Tensor]:
         """Apply rotary positional embeddings when provided."""
         if cos_sin is None:
-            return query, key
-        seq_len = query.shape[1]
+            return q, k
+        seq_len = q.shape[1]
         cos, sin = cos_sin[0][:seq_len], cos_sin[1][:seq_len]
-        return apply_rotary_pos_emb(query, key, cos, sin)
+        return apply_rotary_pos_emb(q, k, cos, sin)
 
-    def _repeat_kv(self, key: Tensor, value: Tensor) -> tuple[Tensor, Tensor]:
-        """Repeat key/value heads for GQA when needed."""
+    def _expand_kv_heads(self, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
+        """Repeat k/v heads for GQA when needed."""
         config = self.config
-        if config.num_key_value_heads == config.num_heads:
-            return key, value
-        repeat = config.num_heads // config.num_key_value_heads
-        key = key.repeat_interleave(repeat, dim=1)
-        value = value.repeat_interleave(repeat, dim=1)
-        return key, value
+        if config.num_kv_heads == config.num_heads:
+            return k, v
+        repeat = config.num_heads // config.num_kv_heads
+        k = k.repeat_interleave(repeat, dim=1)
+        v = v.repeat_interleave(repeat, dim=1)
+        return k, v
 
-    def forward(self, hidden_states: Tensor, *, cos_sin: Optional[CosSin] = None, attn_mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, *, cos_sin: Optional[CosSin] = None, attn_mask: Optional[Tensor] = None) -> Tensor:
         """Compute attention outputs for a batch of sequences."""
         config = self.config
-        batch_size, seq_len, _ = hidden_states.shape
-        query, key, value = self._project_qkv(hidden_states)
+        batch_size, seq_len, _ = x.shape
+        q, k, v = self._compute_qkv(x)
 
         # RoPE
-        query, key = self._apply_rope(query, key, cos_sin)
+        q, k = self._apply_rope(q, k, cos_sin)
 
         # Vanilla attention via PyTorch SDPA
-        query = query.transpose(1, 2)  # [bs, heads, seq, head_dim]
-        key = key.transpose(1, 2)
-        value = value.transpose(1, 2)
-        key, value = self._repeat_kv(key, value)
+        q = q.transpose(1, 2)  # [bs, heads, seq, head_dim]
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        k, v = self._expand_kv_heads(k, v)
 
-        attn_output = F.scaled_dot_product_attention(query, key, value, attn_mask, is_causal=config.causal)
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.output_size)
-        return self.o_proj(attn_output)
+        attn = F.scaled_dot_product_attention(q, k, v, attn_mask, is_causal=config.is_causal)
+        attn = attn.transpose(1, 2).contiguous().view(batch_size, seq_len, config.output_size)
+        return self.out_proj(attn)
