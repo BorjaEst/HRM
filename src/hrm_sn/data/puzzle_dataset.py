@@ -12,15 +12,36 @@ from hrm_sn.loss.act_head import IGNORE_LABEL_ID
 
 class PuzzleDatasetSettings(BaseModel):
     # TODO: Review responsibilities with PuzzleDatamoduleSettings, maybe merge into one
-    seed: int = Field(42, description="Random seed for reproducibility.")
-    dataset_path: str = Field(..., description="Path to the dataset directory containing `train/`, `test/`, etc. subdirectories.")
-    global_batch_size: int = Field(..., description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // num_replicas`.")
-    test_set_mode: bool = Field(False, description="Iterate in test set mode through the dataset without randomization, yields puzzle identifiers for each batch.")
+    seed: int = Field(
+        42,
+        description="Random seed for reproducibility.",
+    )
+    dataset_path: str = Field(
+        ...,
+        description="Path to the dataset directory containing `train/`, `test/`, etc. subdirectories.",
+    )
+    global_batch_size: int = Field(
+        ...,
+        description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // num_replicas`.",
+    )
+    test_set_mode: bool = Field(
+        False,
+        description="Iterate in test set mode through the dataset without randomization, yields puzzle identifiers for each batch.",
+    )
 
-    epochs_per_iter: int = Field(1, description="Epochs to iterate in each iteration. This is used to reduce overhead of randomization and shuffling.")
+    epochs_per_iter: int = Field(
+        1,
+        description="Epochs to iterate in each iteration. This is used to reduce overhead of randomization and shuffling.",
+    )
 
-    rank: int = Field(0, description="Rank of the current process for distributed training. Should be in the range [0, num_replicas - 1].")
-    num_replicas: int = Field(1, description="Total number of processes for distributed training. The dataset is split across these processes according to `rank`.")
+    rank: int = Field(
+        0,
+        description="Rank of the current process for distributed training. Should be in the range [0, num_replicas - 1].",
+    )
+    num_replicas: int = Field(
+        1,
+        description="Total number of processes for distributed training. The dataset is split across these processes according to `rank`.",
+    )
 
 
 class PuzzleDataset(IterableDataset):

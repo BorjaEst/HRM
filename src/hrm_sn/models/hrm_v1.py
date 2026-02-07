@@ -18,23 +18,23 @@ from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
 from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
-from hrm_sn.training.schedules import CosineAnnealingLR, LinearLR, SchedulerConfig, SequentialLR
+from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConfig, SequentialLR
 
 # TODO: Move later to types.py
 Batch: TypeAlias = Tuple[str, Dict[str, torch.Tensor], int]  # (set_name, batch_dict, global_effective_batch_size)
 Device = torch.device
 
 
-class ModelConfig(BaseModel, extra="forbid"):
+class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
 
     # Model architecture and data
     arch: HierarchicalReasoningModel_ACTV1Config = Field(
         ...,
         description="Architecture config. The keys in `arch.__pydantic_extra__` are passed to the model constructor.",
     )
-    data: PuzzleDatasetSettings = Field(
-        ...,
-        description="Data config. The keys in `data` are passed to the dataset constructor.",
+    dataset: PuzzleDatasetSettings = Field(
+        default_factory=PuzzleDatasetSettings,
+        description="Configuration for the PuzzleDataset. This includes parameters like dataset path, batch size, random seed, etc.",
     )
     loss: LossConfig = Field(
         ...,
@@ -53,72 +53,11 @@ class ModelConfig(BaseModel, extra="forbid"):
         description="Learning rate scheduler config. If not set, no learning rate scheduling is applied. The keys in `scheduler` are passed to the scheduler constructor.",
     )
 
-    # Hyperparameters
+    # Extra
     global_batch_size: int = Field(
         ...,
         description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // world_size`.",
-    )
-    epochs: int = Field(..., description="Total number of epochs to train.")
-
-    lr: float = Field(
-        ...,
-        description="Base learning rate for the main optimizer (e.g. Adam). The learning rate for the puzzle embedding optimizer is set by `puzzle_emb_lr`.",
-    )
-    lr_min_ratio: float = Field(
-        default=0.0,
-        description="Minimum learning rate ratio for cosine decay. The learning rate will decay to `base_lr * lr_min_ratio` at the end of training.",
-    )
-    lr_warmup_steps: int = Field(
-        default=0,
-        description="Number of warmup steps for learning rate scheduling.",
-    )
-
-    weight_decay: float = Field(
-        default=0.0,
-        description="Weight decay for the main optimizer (e.g. Adam). Decay for puzzle embedding optimizer is set by `puzzle_emb_weight_decay`.",
-    )
-    beta1: float = Field(
-        default=0.9,
-        description="Beta 1 for Adam optimizer.",
-    )
-    beta2: float = Field(
-        default=0.98,
-        description="Beta 2 for Adam optimizer.",
-    )
-
-    # Puzzle embedding
-    emb_lr: float = Field(
-        ...,
-        description="Base learning rate for the puzzle embedding optimizer (e.g. SignSGD).",
-    )
-    emb_weight_decay: float = Field(
-        default=0.0,
-        description="Weight decay for the puzzle embedding optimizer (e.g. SignSGD).",
-    )
-
-    # Names and tracking
-    project_name: Optional[str] = Field(
-        default=None,
-        description="Project name. If not set, it defaults to the capitalized name of the dataset (e.g. `MATH` -> `Math ACT-torch`).",
-    )
-    run_name: Optional[str] = Field(
-        default=None,
-        description="Run name. If not set, it defaults to `<arch_name> <random_slug>` (e.g. `HrmV1 2x128 4L 16H 0.1D ACT-torch cool-slug`).",
-    )
-    checkpoint_path: Optional[str] = Field(
-        default=None,
-        description="Path to save checkpoints and logs. If not set, it defaults to `checkpoints/<project_name>/<run_name>`.",
-    )
-
-    # Extras
-    checkpoint_every_eval: bool = Field(
-        default=False,
-        description="Whether to checkpoint the model after every evaluation.",
-    )
-    eval_interval: Optional[int] = Field(
-        default=None,
-        description="Number of epochs between evaluations. If not set, it defaults to evaluating only at the end of training.",
-    )
+    )  # TODO: consider moving to BufferSettings or similar
     eval_save_outputs: List[str] = Field(
         default_factory=list,
         description="Evaluation output keys saved as tensors in the checkpoint directory.",
@@ -139,7 +78,7 @@ class ModelState:
 
 
 class Model(L.LightningModule):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig_HRM_V1):
         super().__init__()
         self.model = HierarchicalReasoningModel_ACTV1(config.arch)
         self.loss_head = ACTLossHead(self.model, config.loss.name)
@@ -162,7 +101,7 @@ class Model(L.LightningModule):
         )
 
     @property
-    def config(self) -> ModelConfig:
+    def config(self) -> ModelConfig_HRM_V1:
         return self._config
 
     @property
@@ -204,16 +143,8 @@ class Model(L.LightningModule):
 
     def schedulers(self, optimizers: List[Optimizer]) -> List[SequentialLR]:
         total_steps = int(self.trainer.estimated_stepping_batches)
-        warmup_steps = self.config.scheduler.warmup_steps
-        min_ratio = self.config.scheduler.min_ratio
-        cosine_steps = max(1, total_steps - warmup_steps)
-
-        def make_scheduler(optimizer):
-            warmup = LinearLR(optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)
-            cosine = CosineAnnealingLR(optimizer, T_max=cosine_steps, eta_min=self.config.lr * min_ratio)
-            return SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_steps])
-
-        return [make_scheduler(optimizer) for optimizer in optimizers]
+        config = self.config.scheduler
+        return [CosineAnnealingLRWithWarmup(opt, total_steps, config) for opt in optimizers]
 
     def transfer_batch_to_device(self, batch: Batch, device: Device, dataloader_idx: int = 0) -> Batch:
         set_name, batch_dict, global_effective_bs = batch
