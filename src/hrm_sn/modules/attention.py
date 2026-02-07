@@ -66,14 +66,14 @@ class Attention(nn.Module):
 
     def _compute_qkv(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Project and split inputs into q, k, and v tensors."""
-        config, qkv_proj_out_dim = self.config, self._qkv_proj_out_dim
+        config, qkv_head_count = self.config, self._qkv_head_count
         batch_size, seq_len, _ = x.shape
 
         # hidden_states: [bs, seq_len, embed_dim]
         qkv = self.in_proj(x)
 
         # Split head
-        qkv = qkv.view(batch_size, seq_len, qkv_proj_out_dim, config.head_dim)
+        qkv = qkv.view(batch_size, seq_len, qkv_head_count, config.head_dim)
         q = qkv[:, :, : config.num_heads]
         k = qkv[:, :, config.num_heads : config.num_heads + config.num_kv_heads]
         v = qkv[:, :, config.num_heads + config.num_kv_heads :]
