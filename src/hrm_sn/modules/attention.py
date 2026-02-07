@@ -31,32 +31,39 @@ class AttentionConfig(BaseModel, extra="forbid"):
     """
 
     embed_dim: int = Field(
-        ...,
+        default=512,
+        ge=32,
         frozen=True,
         description="Hidden size of the attention module.",
     )
     num_heads: int = Field(
-        ...,
+        default=8,
+        ge=1,
         frozen=True,
         description="Number of attention heads.",
     )
 
-    num_kv_heads: int = Field(
-        ...,
-        frozen=True,
-        description="Number of k/v heads. If different from num_heads, keys and values are shared across heads.",
-    )
-    is_causal: bool = Field(
-        default=False,
-        description="Whether to apply causal masking in attention.",
-    )
-
-    @field_validator("embed_dim")
+    @field_validator("embed_dim", mode="before")
     def _check_embed_dim(cls, v, values):
         num_heads = values.get("num_heads")
         if num_heads is not None and v % num_heads != 0:
             raise ValueError(f"embed_dim ({v}) must be divisible by num_heads ({num_heads}).")
         return v
+
+    num_kv_heads: Optional[int] = Field(
+        default=None,
+        frozen=True,
+        description="Number of key/value heads for grouped-query attention. If None, defaults to `num_heads` (no sharing).",
+    )
+
+    @field_validator("num_kv_heads", mode="before")
+    def _set_num_kv_heads(cls, v, values):
+        return v if v is not None else values.get("num_heads")
+
+    is_causal: bool = Field(
+        default=False,
+        description="Whether to apply causal masking in attention.",
+    )
 
     @property
     def head_dim(self) -> int:
@@ -81,7 +88,7 @@ class Attention(nn.Module):
         super().__init__()
         self._config = config
 
-        self._qkv_head_count = config.num_heads + 2 * config.num_kv_heads
+        self._qkv_head_count = config.num_heads + 2 * config.num_kv_heads  # type: ignore[assignment]
         self._qkv_proj_out_dim = self._qkv_head_count * config.head_dim
         self.in_proj = CastedLinear(config.embed_dim, self._qkv_proj_out_dim, bias=False)
         self.out_proj = CastedLinear(config.output_size, config.embed_dim, bias=False)
