@@ -8,7 +8,7 @@ import math
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import Tensor, nn
 
 from hrm_sn.utils import trunc_normal_init_
 
@@ -77,7 +77,7 @@ class CastedLinear(nn.Module):
             f"bias={self.bias is not None}, param_dtype={self.param_dtype}"
         )  # fmt: skip
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: Tensor) -> Tensor:
         """Apply the linear projection.
 
         Args:

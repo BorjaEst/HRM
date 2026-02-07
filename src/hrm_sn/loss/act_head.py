@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import Tensor, nn
 
 IGNORE_LABEL_ID = -100
 
@@ -21,13 +21,7 @@ class ACTLossHead(nn.Module):
         return_keys: Sequence[str],
         # Model args
         **model_kwargs,
-    ) -> Tuple[
-        Any,
-        torch.Tensor,
-        Dict[str, torch.Tensor],
-        Optional[Dict[str, torch.Tensor]],
-        torch.Tensor,
-    ]:
+    ) -> Tuple[Any, Tensor, Dict[str, Tensor], Optional[Dict[str, Tensor]], Tensor]:
         # Model logits
         # B x SeqLen x D
         new_carry, outputs = self.model(**model_kwargs)

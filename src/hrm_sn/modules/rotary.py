@@ -2,21 +2,17 @@ from typing import Tuple
 
 import torch
 import torch.nn.functional as F
-from torch import nn
-
-from hrm_sn.utils import trunc_normal_init_
+from torch import Tensor, nn
 
 
-def rotate_half(x: torch.Tensor):
+def rotate_half(x: Tensor):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
 
-def apply_rotary_pos_emb(
-    q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-):
+def apply_rotary_pos_emb(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor):
     # q, k: [bs, seq_len, num_heads, head_dim]
     # cos, sin: [seq_len, head_dim]
     orig_dtype = q.dtype
@@ -34,9 +30,7 @@ class RotaryEmbedding(nn.Module):
         super().__init__()
 
         # RoPE
-        inv_freq = 1.0 / (
-            base ** (torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim)
-        )
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim))
         t = torch.arange(max_position_embeddings, dtype=torch.float32, device=device)
         freqs = torch.outer(t, inv_freq)
 

@@ -31,13 +31,13 @@ class AttentionConfig(BaseModel, extra="forbid"):
     """
 
     embed_dim: int = Field(
-        default=512,
+        default=512,  # TODO: Temporary, it needs to be a non default value
         ge=32,
         frozen=True,
         description="Hidden size of the attention module.",
     )
     num_heads: int = Field(
-        default=8,
+        default=8,  # TODO: Temporary, it needs to be a non default value
         ge=1,
         frozen=True,
         description="Number of attention heads.",
@@ -119,8 +119,8 @@ class Attention(nn.Module):
         # Reshape to per-head representation.
         qkv = qkv.view(batch_size, seq_len, qkv_head_count, config.head_dim)
         q = qkv[:, :, : config.num_heads]
-        k = qkv[:, :, config.num_heads : config.num_heads + config.num_kv_heads]
-        v = qkv[:, :, config.num_heads + config.num_kv_heads :]
+        k = qkv[:, :, config.num_heads : config.num_heads + config.num_kv_heads]  # type: ignore[assignment]
+        v = qkv[:, :, config.num_heads + config.num_kv_heads :]  # type: ignore[assignment]
         return q, k, v
 
     def _apply_rope(self, q: Tensor, k: Tensor, cos_sin: Optional[CosSin]) -> tuple[Tensor, Tensor]:
@@ -144,7 +144,7 @@ class Attention(nn.Module):
         config = self.config
         if config.num_kv_heads == config.num_heads:
             return k, v
-        repeat = config.num_heads // config.num_kv_heads
+        repeat = config.num_heads // config.num_kv_heads  # type: ignore[assignment]
         k = k.repeat_interleave(repeat, dim=1)
         v = v.repeat_interleave(repeat, dim=1)
         return k, v
