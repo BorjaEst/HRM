@@ -17,6 +17,7 @@ dependencies = [
     "hydra-core",
     "omegaconf",
     "pydantic",
+    "pydantic-settings",
     "numpy",
     "tqdm",
     "einops",

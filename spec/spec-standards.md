@@ -11,7 +11,10 @@ This document defines standards for code, experiments, and documentation.
 ## Experiment Standards
 
 - Experiments live in `experiments/` and should be runnable via a single entry script (e.g., `python experiments/<exp>/train.py`).
-- Experiments use Hydra for configuration.
+- Experiments must use **PyTorch Lightning** for training and evaluation loops.
+- Experiments may use **Hydra** or **TOML + Pydantic Settings** for configuration.
+  - When using TOML + Pydantic Settings, the precedence must be deterministic: **CLI overrides TOML overrides defaults**.
+  - Configuration keys should be grouped by component and composed into leaf settings near the classes that consume them.
 - Experiments log to TensorBoard and write checkpoints/metrics to an explicit run directory.
 - Experiments must not duplicate reusable model/data logic that belongs in `src/hrm_sn/`.
 

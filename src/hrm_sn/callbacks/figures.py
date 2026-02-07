@@ -5,14 +5,18 @@ from pydantic import BaseModel, Field
 class FiguresSettings(BaseModel, extra="forbid"):
     """Settings for figure generation during training."""
 
-    # TODO: implement settings for figure generation (e.g., frequency, types of figures, etc.)
+    enabled: bool = Field(
+        default=False,
+        description="Whether to enable the figures callback.",
+    )
 
 
 class FiguresCallback(Callback):
-    """Custom ModelCheckpoint that accepts CheckpointSettings."""
+    """Callback placeholder for future figure generation."""
 
     def __init__(self, settings: FiguresSettings):
-        super().__init__(**settings.model_dump())
+        super().__init__()
+        self.settings = settings
 
 
 __all__ = ["FiguresSettings", "FiguresCallback"]

@@ -39,12 +39,16 @@ This document defines the vocabulary, boundaries, and intended layout. Where the
 
 **Boundary rule**: experiment code may assemble components and wire configs, but core logic must live in `src/hrm_sn/`.
 
-### Config (Hydra)
+### Config (Hydra or TOML + Pydantic Settings)
 
 - **Location**: `config/` (or `experiments/<name>/config/`)
 - **Responsibility**: declarative configuration of experiments.
 - **Conventions**:
-  - Prefer Hydra defaults lists and composable configs.
+  - Hydra is supported, but TOML + Pydantic Settings is also a first-class option.
+  - For TOML + Pydantic Settings:
+    - Configuration keys should be grouped by component (e.g., `shared`, `data`, `model`, `trainer`, `logger`).
+    - Deterministic precedence is required: **CLI overrides TOML overrides defaults**.
+    - Root experiment settings compose leaf settings near the classes that consume them.
   - Model selection should be via explicit config values rather than dynamic string imports when possible.
 
 ### Data
