@@ -17,8 +17,6 @@ arch:
   num_heads: 8 # min(2, hidden_size // 64)
   expansion: 4
 
-  pos_encodings: rope
-
 hydra:
   output_subdir: null
 

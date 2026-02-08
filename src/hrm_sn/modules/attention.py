@@ -2,7 +2,6 @@
 
 This module implements a standard multi-head attention (MHA) layer with optional:
 
-- RoPE (rotary positional embeddings) applied to queries and keys.
 - GQA-style head sharing (a.k.a. grouped-query attention) via `num_kv_heads`.
 - PyTorch SDPA (scaled dot-product attention) backend.
 
@@ -17,8 +16,6 @@ from pydantic import BaseModel, Field, field_validator
 from torch import Tensor, nn
 
 from hrm_sn.modules.projections import CastedLinear
-from hrm_sn.modules.rotary import apply_rotary_pos_emb
-from hrm_sn.types import CosSin
 
 
 class AttentionConfig(BaseModel, extra="forbid"):
@@ -77,7 +74,7 @@ class AttentionConfig(BaseModel, extra="forbid"):
 
 
 class Attention(nn.Module):
-    """Multi-head attention with optional RoPE and grouped-query attention.
+    """Multi-head attention with grouped-query attention support.
 
     Inputs and outputs use the common Transformer layout `[batch, seq, embed]`.
     Internally, tensors are reshaped to per-head form and fed through
@@ -123,18 +120,6 @@ class Attention(nn.Module):
         v = qkv[:, :, config.num_heads + config.num_kv_heads :]  # type: ignore[assignment]
         return q, k, v
 
-    def _apply_rope(self, q: Tensor, k: Tensor, cos_sin: Optional[CosSin]) -> tuple[Tensor, Tensor]:
-        """Apply rotary positional embeddings (RoPE) when provided.
-
-        `cos_sin` is expected to provide precomputed cos/sin tables for at least
-        the current sequence length.
-        """
-        if cos_sin is None:
-            return q, k
-        seq_len = q.shape[1]
-        cos, sin = cos_sin[0][:seq_len], cos_sin[1][:seq_len]
-        return apply_rotary_pos_emb(q, k, cos, sin)
-
     def _expand_kv_heads(self, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
         """Repeat k/v heads for grouped-query attention when needed.
 
@@ -149,12 +134,11 @@ class Attention(nn.Module):
         v = v.repeat_interleave(repeat, dim=1)
         return k, v
 
-    def forward(self, x: Tensor, *, cos_sin: Optional[CosSin] = None, attn_mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, *, attn_mask: Optional[Tensor] = None) -> Tensor:
         """Compute attention outputs for a batch of sequences.
 
         Args:
             x: Hidden states of shape `[batch, seq_len, embedding_dim]`.
-            cos_sin: Optional RoPE tables `(cos, sin)`.
             attn_mask: Optional attention mask passed through to PyTorch SDPA.
                 Shape and dtype semantics follow `scaled_dot_product_attention`.
 
@@ -164,9 +148,6 @@ class Attention(nn.Module):
         config = self.config
         batch_size, seq_len, _ = x.shape
         q, k, v = self._compute_qkv(x)
-
-        # RoPE (when configured) is applied in `[batch, seq, heads, head_dim]` space.
-        q, k = self._apply_rope(q, k, cos_sin)
 
         # SDPA expects `[batch, heads, seq, head_dim]`.
         q = q.transpose(1, 2)  # [bs, heads, seq, head_dim]

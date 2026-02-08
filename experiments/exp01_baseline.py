@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
@@ -150,12 +152,29 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         Creates the aggregate model configuration consumed by Model.
         """
         if self.configuration_path is None:
-            return ModelConfig_HRM_V1(model_name="hrm_v1", model_version="default")
+            model_config = ModelConfig_HRM_V1.model_validate(self, from_attributes=True)
+        else:
+            with open(self.configuration_path, "rb") as f:
+                config_dict = tomllib.load(f)
+            model_config = ModelConfig_HRM_V1.model_validate(config_dict, from_attributes=True)
 
-        with open(self.configuration_path, "rb") as f:
-            config_dict = tomllib.load(f)
+        metadata = self._load_dataset_metadata(model_config.dataset.dataset_path, split="train")
+        arch = model_config.arch.model_copy(
+            update={
+                "seq_len": metadata.seq_len,
+                "vocab_size": metadata.vocab_size,
+            }
+        )
+        return model_config.model_copy(update={"arch": arch})
 
-        return ModelConfig_HRM_V1.model_validate(config_dict, from_attributes=True)
+    @staticmethod
+    def _load_dataset_metadata(dataset_path: str, *, split: str) -> PuzzleDatasetMetadata:
+        metadata_path = Path(dataset_path) / split / "dataset.json"
+        if not metadata_path.exists():
+            raise FileNotFoundError(f"Dataset metadata not found at {metadata_path}. Ensure the dataset is built before training.")
+
+        with metadata_path.open("r", encoding="utf-8") as f:
+            return PuzzleDatasetMetadata.model_validate(json.load(f))
 
     @property
     def datamodule(self) -> PuzzleDatamoduleSettings:

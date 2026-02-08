@@ -1,5 +1,4 @@
-from typing import Tuple
+"""Shared type aliases.
 
-from torch import Tensor
-
-CosSin = Tuple[Tensor, Tensor]
+This module is intentionally small and only includes active type aliases.
+"""

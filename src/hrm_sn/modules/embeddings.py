@@ -6,11 +6,11 @@ supporting the initialization and dtype/casting patterns used in this repo.
 
 This module provides a single dense embedding implementation:
 
-- :class:`LearnedPosEmbedding `: a standard dense embedding table (learnable ``weight``)
+- :class:`LearnedPosEmbedding`: a standard dense embedding table (learnable ``weight``)
     with explicit dtype casting.
 """
 
-from typing import Literal, Tuple, Union
+from typing import Literal
 
 import torch
 import torch.nn.functional as F
@@ -106,68 +106,4 @@ class LearnedPosEmbedding(Embedding):
         return super().forward(input)
 
 
-class RotaryPosEmbeddingConfig(BaseModel, extra="forbid"):
-
-    max_position_embeddings: int = Field(
-        ...,
-        ge=1,
-        description="Maximum number of positions to be embedded. This determines the maximum sequence length supported by the RoPE implementation.",
-    )
-    embedding_dim: int = Field(
-        ...,
-        ge=2,
-        description="Per-head dimension RoPE is applied to.",
-    )
-    theta: float = Field(
-        10000.0,
-        gt=0.0,
-        description="RoPE base (theta), e.g. 10000.",
-    )
-
-
-class RotaryPosEmbedding(nn.Module):
-    def __init__(self, config: RotaryPosEmbeddingConfig, device=None, dtype=None):
-        super().__init__()
-        self._config = config
-
-        # RoPE
-        dim = config.embedding_dim
-        inv_freq = 1.0 / (config.theta ** (torch.arange(0, dim, 2, device=device, dtype=dtype) / dim))
-        t = torch.arange(config.max_position_embeddings, dtype=torch.float32, device=device)
-        freq = torch.outer(t, inv_freq)
-
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
-        emb = torch.cat((freq, freq), dim=-1)
-        self.cos_cached = nn.Buffer(emb.cos(), persistent=False)
-        self.sin_cached = nn.Buffer(emb.sin(), persistent=False)
-
-    @property
-    def config(self) -> RotaryPosEmbeddingConfig:
-        return self._config
-
-    def forward(self):
-        return self.cos_cached, self.sin_cached
-
-
-PosEncodingConfig = Union[LearnedPosEmbeddingConfig, RotaryPosEmbeddingConfig]
-__all__ = ["LearnedPosEmbedding", "LearnedPosEmbeddingConfig", "RotaryPosEmbedding", "RotaryPosEmbeddingConfig", "PosEncodingConfig"]
-
-
-def rotate_half(x: Tensor):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
-def apply_rotary_pos_emb(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor):
-    # q, k: [bs, seq_len, num_heads, head_dim]
-    # cos, sin: [seq_len, head_dim]
-    orig_dtype = q.dtype
-    q = q.to(cos.dtype)
-    k = k.to(cos.dtype)
-
-    q_embed = (q * cos.unsqueeze(-2)) + (rotate_half(q) * sin.unsqueeze(-2))
-    k_embed = (k * cos.unsqueeze(-2)) + (rotate_half(k) * sin.unsqueeze(-2))
-
-    return q_embed.to(orig_dtype), k_embed.to(orig_dtype)
+__all__ = ["LearnedPosEmbedding", "LearnedPosEmbeddingConfig", "Embedding", "EmbeddingConfig"]

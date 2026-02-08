@@ -1,25 +1,16 @@
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from pydantic import BaseModel, Field
 from torch import Tensor, nn
 
 from hrm_sn.modules.attention import Attention, AttentionConfig
-from hrm_sn.modules.embeddings import (  # fmt: skip
-    Embedding,
-    EmbeddingConfig,
-    LearnedPosEmbedding,
-    LearnedPosEmbeddingConfig,
-    PosEncodingConfig,
-    RotaryPosEmbedding,
-    RotaryPosEmbeddingConfig,
-)
+from hrm_sn.modules.embeddings import Embedding, EmbeddingConfig
 from hrm_sn.modules.mlp import SwiGLU
 from hrm_sn.modules.norms import rms_norm
 from hrm_sn.modules.projections import CastedLinear as Linear
-from hrm_sn.types import CosSin
 from hrm_sn.utils import trunc_normal_init_
 
 
@@ -37,6 +28,91 @@ class HierarchicalReasoningModel_ACTV1Carry:
     halted: Tensor
 
     current_data: Dict[str, Tensor]
+
+
+class HierarchicalReasoningModel_ACTV1Config(BaseModel, extra="forbid"):
+    """Configuration for HRM ACT v1 with learned absolute positional embeddings."""
+
+    seq_len: int = Field(
+        ...,
+        ge=1,
+        description="Sequence length for the model (number of tokens per example).",
+    )
+    vocab_size: int = Field(
+        ...,
+        ge=1,
+        description="Vocabulary size for token embeddings and LM head.",
+    )
+    hidden_size: int = Field(
+        ...,
+        ge=1,
+        description="Embedding dimension for token and positional embeddings.",
+    )
+    num_heads: int = Field(
+        ...,
+        ge=1,
+        description="Number of attention heads.",
+    )
+    num_kv_heads: Optional[int] = Field(
+        default=None,
+        description="Number of key/value heads for grouped-query attention. Defaults to num_heads.",
+    )
+    is_causal: bool = Field(
+        default=False,
+        description="Whether attention is causal.",
+    )
+    expansion: float = Field(
+        default=4.0,
+        gt=1.0,
+        description="Expansion factor for MLP layers.",
+    )
+    rms_norm_eps: float = Field(
+        default=1e-5,
+        description="Epsilon value for RMS normalization layers.",
+    )
+    H_cycles: int = Field(
+        ...,
+        ge=1,
+        description="Number of H-level reasoning cycles.",
+    )
+    L_cycles: int = Field(
+        ...,
+        ge=1,
+        description="Number of L-level reasoning cycles.",
+    )
+    H_layers: int = Field(
+        default=4,
+        ge=1,
+        description="Number of transformer layers in the H-level reasoning module.",
+    )
+    L_layers: int = Field(
+        default=4,
+        ge=1,
+        description="Number of transformer layers in the L-level reasoning module.",
+    )
+    halt_max_steps: int = Field(
+        ...,
+        ge=1,
+        description="Maximum number of ACT steps.",
+    )
+    halt_exploration_prob: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Exploration probability for ACT halting.",
+    )
+
+    @property
+    def block_config(self) -> "SettingsHRM11":
+        """Materialize the transformer block configuration used by HRM layers."""
+        return SettingsHRM11(
+            embedding_dim=self.hidden_size,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            is_causal=self.is_causal,
+            rms_norm_eps=self.rms_norm_eps,
+            expansion=self.expansion,
+        )
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -74,8 +150,8 @@ class HierarchicalReasoningModel_ACTV1Block(nn.Module):
     def config(self) -> SettingsHRM11:
         return self._config
 
-    def forward(self, cos_sin: CosSin, x: Tensor) -> Tensor:
-        attention = self.self_attn(x, cos_sin=cos_sin)
+    def forward(self, x: Tensor) -> Tensor:
+        attention = self.self_attn(x)
         x = rms_norm(x + attention, variance_epsilon=self.norm_eps)
         x = rms_norm(x + self.mlp(x), variance_epsilon=self.norm_eps)
         return x
@@ -88,10 +164,10 @@ class HierarchicalReasoningModel_ACTV1ReasoningModule(nn.Module):
         modules = [HierarchicalReasoningModel_ACTV1Block(config) for config in layers]
         self.layers = torch.nn.ModuleList(modules)
 
-    def forward(self, x: Tensor, input_injection: Tensor, **kwargs) -> Tensor:
+    def forward(self, x: Tensor, input_injection: Tensor) -> Tensor:
         x = x + input_injection
         for layer in self.layers:
-            x = layer(x=x, **kwargs)
+            x = layer(x=x)
         return x
 
 
@@ -136,25 +212,35 @@ class SettingsHRM12(SettingsHRM11, BaseModel, extra="forbid"):
 
 
 class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
-    def __init__(self, config: SettingsHRM12, device=None, dtype=None) -> None:
+    def __init__(self, config: HierarchicalReasoningModel_ACTV1Config, device=None, dtype=None) -> None:
         super().__init__()
         self.config = config
 
-        self.embed_tokens = Embedding(config.token_embeddings)
+        self.embed_scale = math.sqrt(self.config.hidden_size)
+        embed_init_std = 1.0 / self.embed_scale
+
+        token_embed_config = EmbeddingConfig(
+            num_embeddings=self.config.vocab_size,
+            embedding_dim=self.config.hidden_size,
+            init_std=embed_init_std,
+        )
+        pos_embed_config = EmbeddingConfig(
+            num_embeddings=self.config.seq_len,
+            embedding_dim=self.config.hidden_size,
+            init_std=embed_init_std,
+        )
+
+        self.embed_tokens = Embedding(token_embed_config)
+        self.embed_pos = Embedding(pos_embed_config)
         self.lm_head = Linear(self.config.hidden_size, self.config.vocab_size, bias=False)
         self.q_head = Linear(self.config.hidden_size, 2, bias=True)
 
-        if isinstance(config.pos_encodings, RotaryPosEmbeddingConfig):
-            self.embed_pos = RotaryPosEmbedding(config.pos_encodings)
-        if isinstance(config.pos_encodings, LearnedPosEmbeddingConfig):
-            self.embed_pos = LearnedPosEmbedding(config.pos_encodings)
-
         # Reasoning Layers
         self.H_level = HierarchicalReasoningModel_ACTV1ReasoningModule(
-            layers=[self.config.settings_hrm11 for _i in range(self.config.H_layers)],
+            layers=[self.config.block_config for _i in range(self.config.H_layers)],
         )
         self.L_level = HierarchicalReasoningModel_ACTV1ReasoningModule(
-            layers=[self.config.settings_hrm11 for _i in range(self.config.L_layers)],
+            layers=[self.config.block_config for _i in range(self.config.L_layers)],
         )
 
         # Initial states
@@ -176,9 +262,9 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
     def empty_carry(self, batch_size: int) -> InnerState:
         config = self.config
         return InnerState(
-            z_H=torch.empty(batch_size, config.vocab_size, config.hidden_size),
+            z_H=torch.empty(batch_size, config.seq_len, config.hidden_size),
             # dtype=self.dtype,  # TODO: resolve dtype correctly across the model
-            z_L=torch.empty(batch_size, config.vocab_size, config.hidden_size),
+            z_L=torch.empty(batch_size, config.seq_len, config.hidden_size),
             # dtype=self.dtype,  # TODO: resolve dtype correctly across the model
         )
 
@@ -189,8 +275,6 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         )
 
     def forward(self, carry: InnerState, batch: Dict[str, Tensor]) -> Tuple[InnerState, Tensor, Tuple[Tensor, Tensor]]:
-        seq_info = dict(cos_sin=self.rotary_emb() if hasattr(self, "rotary_emb") else None)
-
         # Input encoding
         input_embeddings = self._input_embeddings(batch["inputs"])
 
@@ -201,16 +285,16 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
             for _H_step in range(self.config.H_cycles):
                 for _L_step in range(self.config.L_cycles):
                     if not ((_H_step == self.config.H_cycles - 1) and (_L_step == self.config.L_cycles - 1)):
-                        z_L = self.L_level(z_L, z_H + input_embeddings, **seq_info)
+                        z_L = self.L_level(z_L, z_H + input_embeddings)
 
                 if not (_H_step == self.config.H_cycles - 1):
-                    z_H = self.H_level(z_H, z_L, **seq_info)
+                    z_H = self.H_level(z_H, z_L)
 
         assert not z_H.requires_grad and not z_L.requires_grad
 
         # 1-step grad
-        z_L = self.L_level(z_L, z_H + input_embeddings, **seq_info)
-        z_H = self.H_level(z_H, z_L, **seq_info)
+        z_L = self.L_level(z_L, z_H + input_embeddings)
+        z_H = self.H_level(z_H, z_L)
 
         # LM Outputs
         new_carry = InnerState(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
@@ -222,13 +306,22 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         return new_carry, output, (q_logits[..., 0], q_logits[..., 1])
 
     def _input_embeddings(self, input: Tensor) -> Tensor:
-        embedding = self.embed_tokens(input.to(torch.int32))
-        if self.config.pos_encodings == "learned":  # TODO: Can we move to LearnedPosEmbedding.forward?
-            # scale by 1/sqrt(2) to maintain forward variance
-            embedding = 0.707106781 * (embedding + self.embed_pos.weight.to(self.forward_dtype))
+        if input.ndim != 2:
+            raise ValueError(f"Expected inputs with shape [batch, seq_len], got {tuple(input.shape)}")
+
+        seq_len = input.shape[1]
+        if seq_len > self.config.seq_len:
+            raise ValueError(f"Input seq_len ({seq_len}) exceeds configured seq_len ({self.config.seq_len}).")
+
+        token_embeddings = self.embed_tokens(input.to(torch.int32))
+        positions = torch.arange(seq_len, device=input.device)
+        pos_embeddings = self.embed_pos(positions).unsqueeze(0)
+
+        # scale by 1/sqrt(2) to maintain forward variance
+        embeddings = 0.707106781 * (token_embeddings + pos_embeddings)
 
         # Scale
-        return self.embed_scale * embedding
+        return self.embed_scale * embeddings
 
 
 class HierarchicalReasoningModel_ACTV1(nn.Module):
