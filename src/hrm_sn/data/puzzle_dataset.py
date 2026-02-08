@@ -73,7 +73,6 @@ class PuzzleDataset(IterableDataset):
             "inputs": "r",
             "labels": "r",
             # Keep indices in memory
-            "puzzle_identifiers": None,
             "puzzle_indices": None,
             "group_indices": None,
         }
@@ -103,13 +102,12 @@ class PuzzleDataset(IterableDataset):
             batch["labels"][batch["labels"] == self.metadata.ignore_label_id] = IGNORE_LABEL_ID
 
         # Pad
-        if batch["puzzle_identifiers"].size < self.local_batch_size:
-            pad_size = self.local_batch_size - batch["puzzle_identifiers"].size
+        if batch["inputs"].shape[0] < self.local_batch_size:
+            pad_size = self.local_batch_size - batch["inputs"].shape[0]
 
             pad_values = {
                 "inputs": self.metadata.pad_id,
                 "labels": IGNORE_LABEL_ID,
-                "puzzle_identifiers": self.metadata.blank_identifier_id,
             }
             batch = {
                 k: np.pad(
@@ -152,7 +150,6 @@ class PuzzleDataset(IterableDataset):
                     {
                         "inputs": dataset["inputs"][local_start:local_end],
                         "labels": dataset["labels"][local_start:local_end],
-                        "puzzle_identifiers": dataset["puzzle_identifiers"][puzzle_indices],
                     }
                 )
 
@@ -195,7 +192,6 @@ class PuzzleDataset(IterableDataset):
                     {
                         "inputs": dataset["inputs"][batch_indices],
                         "labels": dataset["labels"][batch_indices],
-                        "puzzle_identifiers": dataset["puzzle_identifiers"][batch_puzzle_indices],
                     }
                 )
 

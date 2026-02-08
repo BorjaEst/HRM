@@ -92,22 +92,17 @@ class Model(L.LightningModule):
         # init buffers and assemblers for partial reset logic in training_step
         self._train_buffer = FifoBuffer(
             capacity_rows=4 * config.global_batch_size,  # or local batch size if you prefer
-            keys=("inputs", "labels", "puzzle_identifiers"),
+            keys=("inputs", "labels"),
             pin_memory=True,
         )
         self._train_batch_assembler = PartialResetBatchAssembler(
             buffer=self._train_buffer,
-            keys=("inputs", "labels", "puzzle_identifiers"),
+            keys=("inputs", "labels"),
         )
 
     @property
     def config(self) -> ModelConfig_HRM_V1:
         return self._config
-
-    @property
-    def puzzle_emb(self):
-        """Access to puzzle embeddings for optimizer configuration."""
-        return self.model.puzzle_emb if hasattr(self.model, "puzzle_emb") else None
 
     def init_state(self, batch: Batch) -> ModelState:
         set_name, batch_dict, global_effective_bs = batch
@@ -121,22 +116,10 @@ class Model(L.LightningModule):
         return optimizers, schedulers
 
     def build_optimizers(self) -> List[Optimizer]:
-        # Main optimizer: all parameters except puzzle embeddings
-        main_params = [p for n, p in self.model.named_parameters() if "puzzle_emb" not in n and p.requires_grad]
-
-        # Sparse embedding optimizer: puzzle embedding buffers/parameters
-        # The optimizer expects 3 params: local_indices (no grad), local_weight (with grad), and weight (no grad)
-        if hasattr(self.model, "puzzle_emb") and self.model.puzzle_emb is not None:
-            emb_params = [
-                self.model.puzzle_emb.local_indices,  # local_indices, no grad
-                self.model.puzzle_emb.local_weight,  # local_weight, requires_grad
-                self.model.puzzle_emb.weight,  # global_weights, no grad
-            ]
-            optimizer_emb = CastedSparseEmbeddingSignSGD_Distributed(emb_params, self.config.optim_emb)
-        else:
-            # No puzzle embeddings, create dummy optimizer with empty params
-            optimizer_emb = CastedSparseEmbeddingSignSGD_Distributed([], self.config.optim_emb)
-
+        # Main optimizer: all trainable parameters
+        main_params = [p for p in self.model.parameters() if p.requires_grad]
+        # Dummy secondary optimizer to preserve scheduler/step structure
+        optimizer_emb = CastedSparseEmbeddingSignSGD_Distributed([], self.config.optim_emb)
         optimizer_main = AdamATan2(main_params, self.config.optim_main)
 
         return [optimizer_main, optimizer_emb]

@@ -59,7 +59,6 @@ def convert_subset(set_name: str, config: DataProcessConfig):
         for k in [
             "inputs",
             "labels",
-            "puzzle_identifiers",
             "puzzle_indices",
             "group_indices",
         ]
@@ -79,7 +78,6 @@ def convert_subset(set_name: str, config: DataProcessConfig):
             puzzle_id += 1
 
             results["puzzle_indices"].append(example_id)
-            results["puzzle_identifiers"].append(0)
 
         # Push group
         results["group_indices"].append(puzzle_id)
@@ -101,7 +99,6 @@ def convert_subset(set_name: str, config: DataProcessConfig):
         "labels": _seq_to_numpy(results["labels"]),
         "group_indices": np.array(results["group_indices"], dtype=np.int32),
         "puzzle_indices": np.array(results["puzzle_indices"], dtype=np.int32),
-        "puzzle_identifiers": np.array(results["puzzle_identifiers"], dtype=np.int32),
     }
 
     # Metadata
@@ -110,8 +107,6 @@ def convert_subset(set_name: str, config: DataProcessConfig):
         vocab_size=len(CHARSET) + 1,  # PAD + Charset
         pad_id=0,
         ignore_label_id=0,
-        blank_identifier_id=0,
-        num_puzzle_identifiers=1,
         total_groups=len(results["group_indices"]) - 1,
         mean_puzzle_examples=1,
         sets=["all"],
