@@ -25,29 +25,29 @@ class AttentionConfig(BaseModel, extra="forbid"):
     """Configuration for the :class:`Attention` module.
 
     Notes:
-        - `embed_dim` must be divisible by `num_heads`.
+        - `embedding_dim` must be divisible by `num_heads`.
         - `num_kv_heads` enables grouped-query attention when it is smaller than
           `num_heads` (keys/values are shared across multiple query heads).
     """
 
-    embed_dim: int = Field(
-        default=512,  # TODO: Temporary, it needs to be a non default value
+    embedding_dim: int = Field(
+        ...,
         ge=32,
         frozen=True,
         description="Hidden size of the attention module.",
     )
     num_heads: int = Field(
-        default=8,  # TODO: Temporary, it needs to be a non default value
+        ...,
         ge=1,
         frozen=True,
         description="Number of attention heads.",
     )
 
-    @field_validator("embed_dim", mode="before")
+    @field_validator("embedding_dim", mode="before")
     def _check_embed_dim(cls, v, values):
         num_heads = values.get("num_heads")
         if num_heads is not None and v % num_heads != 0:
-            raise ValueError(f"embed_dim ({v}) must be divisible by num_heads ({num_heads}).")
+            raise ValueError(f"embedding_dim ({v}) must be divisible by num_heads ({num_heads}).")
         return v
 
     num_kv_heads: Optional[int] = Field(
@@ -68,7 +68,7 @@ class AttentionConfig(BaseModel, extra="forbid"):
     @property
     def head_dim(self) -> int:
         """Dimension of each attention head."""
-        return self.embed_dim // self.num_heads
+        return self.embedding_dim // self.num_heads
 
     @property
     def output_size(self) -> int:
@@ -90,8 +90,8 @@ class Attention(nn.Module):
 
         self._qkv_head_count = config.num_heads + 2 * config.num_kv_heads  # type: ignore[assignment]
         self._qkv_proj_out_dim = self._qkv_head_count * config.head_dim
-        self.in_proj = CastedLinear(config.embed_dim, self._qkv_proj_out_dim, bias=False)
-        self.out_proj = CastedLinear(config.output_size, config.embed_dim, bias=False)
+        self.in_proj = CastedLinear(config.embedding_dim, self._qkv_proj_out_dim, bias=False)
+        self.out_proj = CastedLinear(config.output_size, config.embedding_dim, bias=False)
 
     @property
     def config(self) -> AttentionConfig:
@@ -101,7 +101,7 @@ class Attention(nn.Module):
         """Project and split inputs into q, k, and v tensors.
 
         Args:
-            x: Hidden states of shape `[batch, seq_len, embed_dim]`.
+            x: Hidden states of shape `[batch, seq_len, embedding_dim]`.
 
         Returns:
             Tuple `(q, k, v)` with shapes:
@@ -153,13 +153,13 @@ class Attention(nn.Module):
         """Compute attention outputs for a batch of sequences.
 
         Args:
-            x: Hidden states of shape `[batch, seq_len, embed_dim]`.
+            x: Hidden states of shape `[batch, seq_len, embedding_dim]`.
             cos_sin: Optional RoPE tables `(cos, sin)`.
             attn_mask: Optional attention mask passed through to PyTorch SDPA.
                 Shape and dtype semantics follow `scaled_dot_product_attention`.
 
         Returns:
-            Attention outputs of shape `[batch, seq_len, embed_dim]`.
+            Attention outputs of shape `[batch, seq_len, embedding_dim]`.
         """
         config = self.config
         batch_size, seq_len, _ = x.shape

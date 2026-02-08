@@ -7,91 +7,31 @@ from pydantic import BaseModel, Field
 from torch import Tensor, nn
 
 from hrm_sn.modules.attention import Attention, AttentionConfig
-from hrm_sn.modules.embeddings import CastedEmbedding as Embedding
+from hrm_sn.modules.embeddings import (  # fmt: skip
+    Embedding,
+    EmbeddingConfig,
+    LearnedPosEmbedding,
+    LearnedPosEmbeddingConfig,
+    PosEncodingConfig,
+    RotaryPosEmbedding,
+    RotaryPosEmbeddingConfig,
+)
 from hrm_sn.modules.mlp import SwiGLU
 from hrm_sn.modules.norms import rms_norm
 from hrm_sn.modules.projections import CastedLinear as Linear
-from hrm_sn.modules.rotary import RotaryEmbedding
 from hrm_sn.types import CosSin
 from hrm_sn.utils import trunc_normal_init_
 
 
-class HRMArchConfig(BaseModel):
-    attention: AttentionConfig = Field(
-        default_factory=AttentionConfig,
-        description="Configuration for the attention modules used in the transformer layers.",
-    )
-    pos_encodings: Literal["RoPE", "learned"] = Field(
-        default="RoPE",
-        description="Type of positional encodings to use. Options are 'RoPE' for Rotary Positional Encodings and 'learned' for Learned Positional Embeddings.",
-    )
-    rope_theta: float = Field(
-        default=10000.0,
-        description="Base period for rotary positional embeddings. The period of the rotary embeddings is computed as `rope_theta ** (dim / (hidden_size // num_heads))`, where `dim` is the dimension of the rotary embeddings (i.e. `hidden_size // num_heads`).",
-    )
-    rms_norm_eps: float = Field(
-        default=1e-5,
-        description="Epsilon value for RMS normalization layers.",
-    )
-    expansion: float = Field(
-        default=4.0,
-        gt=1.0,
-        description="Expansion factor for the MLP layers in the transformer blocks. The MLP hidden size is computed as `hidden_size * expansion`.",
-    )
-
-    H_layers: int = Field(
-        default=4,
-        ge=1,
-        description="Number of transformer layers in the H-level reasoning module.",
-    )
-    L_layers: int = Field(
-        default=2,
-        ge=1,
-        description="Number of transformer layers in the L-level reasoning module.",
-    )
-
-    H_cycles: int = Field(
-        default=4,
-        ge=1,
-        description="Number of H-level cycles per forward pass. The total number of H-level iterations is `H_cycles * L_cycles`.",
-    )
-    L_cycles: int = Field(
-        default=2,
-        ge=1,
-        description="Number of L-level cycles per H-level cycle. The total number of L-level iterations is `H_cycles * L_cycles`.",
-    )
-
-
-class ACTConfig(BaseModel):
-    halt_exploration_prob: float = Field(
-        default=0.1,
-        ge=0.0,
-        le=1.0,
-        description="Probability of taking a random action (halt or continue) for exploration during training when using ACT.",
-    )
-    halt_max_steps: int = Field(
-        default=16,
-        ge=1,
-        description="Maximum number of reasoning steps before forced halting.",
-    )
-
-
-class NumericConfig(BaseModel):
-    forward_dtype: Literal["float16", "bfloat16", "float32"] = Field(
-        default="bfloat16",
-        description="Data type for forward pass. Options are 'float16', 'bfloat16', and 'float32'.",
-    )
-
-
 @dataclass
-class HierarchicalReasoningModel_ACTV1InnerCarry:
+class InnerState:
     z_H: Tensor
     z_L: Tensor
 
 
 @dataclass
 class HierarchicalReasoningModel_ACTV1Carry:
-    inner_carry: HierarchicalReasoningModel_ACTV1InnerCarry
+    inner_carry: InnerState
 
     steps: Tensor
     halted: Tensor
@@ -103,11 +43,13 @@ class HierarchicalReasoningModel_ACTV1Carry:
 # ----------------------------------------------------------------------------------------------------------
 
 
-class SettingsHRM11(BaseModel):
-    attention: AttentionConfig = Field(
-        default_factory=AttentionConfig,
-        description="Configuration for the attention modules used in the transformer layers.",
-    )
+class SettingsHRM11(AttentionConfig, BaseModel, extra="forbid"):
+
+    @property
+    def attention(self) -> AttentionConfig:
+        """Attention configuration used for constructing the attention modules in the transformer layers."""
+        return AttentionConfig.model_validate(self, from_attributes=True)
+
     rms_norm_eps: float = Field(
         default=1e-5,
         description="Epsilon value for RMS normalization layers.",
@@ -125,60 +67,60 @@ class HierarchicalReasoningModel_ACTV1Block(nn.Module):
         self._config = config
 
         self.self_attn = Attention(config.attention)
-        self.mlp = SwiGLU(config.attention.embed_dim, config.expansion)
+        self.mlp = SwiGLU(config.embedding_dim, config.expansion)
         self.norm_eps = config.rms_norm_eps
 
     @property
     def config(self) -> SettingsHRM11:
         return self._config
 
-    def forward(self, cos_sin: CosSin, hidden_states: Tensor) -> Tensor:
-        attention = self.self_attn(hidden_states, cos_sin=cos_sin)
-        hidden_states = rms_norm(hidden_states + attention, variance_epsilon=self.norm_eps)
-        hidden_states = rms_norm(hidden_states + self.mlp(hidden_states), variance_epsilon=self.norm_eps)
-        return hidden_states
+    def forward(self, cos_sin: CosSin, x: Tensor) -> Tensor:
+        attention = self.self_attn(x, cos_sin=cos_sin)
+        x = rms_norm(x + attention, variance_epsilon=self.norm_eps)
+        x = rms_norm(x + self.mlp(x), variance_epsilon=self.norm_eps)
+        return x
 
 
 class HierarchicalReasoningModel_ACTV1ReasoningModule(nn.Module):
-    def __init__(self, layers: List[HierarchicalReasoningModel_ACTV1Block]):
+    def __init__(self, layers: List[SettingsHRM11]):
         super().__init__()
-        self.layers = torch.nn.ModuleList(layers)
 
-    def forward(self, hidden_states: Tensor, input_injection: Tensor, **kwargs) -> Tensor:
-        hidden_states = hidden_states + input_injection
+        modules = [HierarchicalReasoningModel_ACTV1Block(config) for config in layers]
+        self.layers = torch.nn.ModuleList(modules)
+
+    def forward(self, x: Tensor, input_injection: Tensor, **kwargs) -> Tensor:
+        x = x + input_injection
         for layer in self.layers:
-            hidden_states = layer(hidden_states=hidden_states, **kwargs)
-        return hidden_states
+            x = layer(x=x, **kwargs)
+        return x
 
 
 # ----------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------
 
 
-class SettingsHRM12(BaseModel):
-    settings_hrm11: SettingsHRM11 = Field(
-        default_factory=SettingsHRM11,
-        description="Settings for the HRM11 blocks used in the reasoning modules.",
+class SettingsHRM12(SettingsHRM11, BaseModel, extra="forbid"):
+
+    @property
+    def settings_hrm11(self) -> SettingsHRM11:
+        return SettingsHRM11.model_validate(self, from_attributes=True)
+
+    token_embeddings: EmbeddingConfig = Field(
+        ...,
+        description="Configuration for the token embedding layer. The keys in `token_embeddings` are passed to the embedding constructor.",
     )
-    vocab_size: int = Field(
-        default=30522,  # TODO: Find the correct place to place it
-        description="Vocabulary size for the token embeddings and LM head.",
-    )
-    seq_len: int = Field(
-        default=1024,  # TODO: Find the correct place to place it
-        description="Maximum sequence length for the model. This is used for positional encodings and for pre-allocating buffers.",
-    )
-    pos_encodings: Literal["RoPE", "learned"] = Field(
-        default="RoPE",
-        description="Type of positional encodings to use. Options are 'RoPE' for Rotary Positional Encodings and 'learned' for Learned Positional Embeddings.",
-    )
-    num_heads: int = Field(
-        default=8,
-        description="Number of attention heads for the multi-head attention modules. The head dimension is computed as `hidden_size // num_heads`.",
-    )
-    rope_theta: float = Field(
-        default=10000.0,
-        description="Base period for rotary positional embeddings. The period of the rotary embeddings is computed as `rope_theta ** (dim / (hidden_size // num_heads))`, where `dim` is the dimension of the rotary embeddings (i.e. `hidden_size // num_heads`).",
+
+    @property
+    def vocab_size(self) -> int:
+        return self.token_embeddings.num_embeddings
+
+    @property
+    def hidden_size(self) -> int:
+        return self.token_embeddings.embedding_dim
+
+    pos_encodings: PosEncodingConfig = Field(
+        ...,
+        description="Configuration for positional encodings. The keys in `pos_encodings` are passed to the positional embedding constructor.",
     )
 
     H_layers: int = Field(
@@ -192,63 +134,36 @@ class SettingsHRM12(BaseModel):
         description="Number of transformer layers in the L-level reasoning module.",
     )
 
-    forward_dtype: Literal["float16", "bfloat16", "float32"] = Field(
-        default="bfloat16",
-        description="Data type for forward pass. Options are 'float16', 'bfloat16', and 'float32'.",
-    )
-
 
 class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
-    def __init__(self, config: SettingsHRM12) -> None:
+    def __init__(self, config: SettingsHRM12, device=None, dtype=None) -> None:
         super().__init__()
         self.config = config
-        self.forward_dtype = getattr(torch, self.config.forward_dtype)
 
-        # I/O
-        self.embed_scale = math.sqrt(self.config.settings_hrm11.attention.embed_dim)
-        embed_init_std = 1.0 / self.embed_scale
+        self.embed_tokens = Embedding(config.token_embeddings)
+        self.lm_head = Linear(self.config.hidden_size, self.config.vocab_size, bias=False)
+        self.q_head = Linear(self.config.hidden_size, 2, bias=True)
 
-        self.embed_tokens = Embedding(
-            num_embeddings=self.config.settings_hrm11.attention.embed_dim,
-            embedding_dim=self.config.settings_hrm11.attention.embed_dim,
-            init_std=embed_init_std,
-            dtype=self.forward_dtype,
-        )
-        self.lm_head = Linear(self.config.settings_hrm11.attention.embed_dim, self.config.vocab_size, bias=False)
-        self.q_head = Linear(self.config.settings_hrm11.attention.embed_dim, 2, bias=True)
-
-        # LM Blocks
-        if self.config.pos_encodings == "rope":
-            self.rotary_emb = RotaryEmbedding(
-                dim=self.config.hidden_size // self.config.num_heads,
-                max_position_embeddings=self.config.seq_len,
-                base=self.config.rope_theta,
-            )
-        elif self.config.pos_encodings == "learned":
-            self.embed_pos = Embedding(
-                self.config.seq_len,
-                self.config.settings_hrm11.attention.embed_dim,
-                init_std=embed_init_std,
-                dtype=self.forward_dtype,
-            )
-        else:
-            raise NotImplementedError()
+        if isinstance(config.pos_encodings, RotaryPosEmbeddingConfig):
+            self.embed_pos = RotaryPosEmbedding(config.pos_encodings)
+        if isinstance(config.pos_encodings, LearnedPosEmbeddingConfig):
+            self.embed_pos = LearnedPosEmbedding(config.pos_encodings)
 
         # Reasoning Layers
         self.H_level = HierarchicalReasoningModel_ACTV1ReasoningModule(
-            layers=[HierarchicalReasoningModel_ACTV1Block(self.config.settings_hrm11) for _i in range(self.config.H_layers)],
+            layers=[self.config.settings_hrm11 for _i in range(self.config.H_layers)],
         )
         self.L_level = HierarchicalReasoningModel_ACTV1ReasoningModule(
-            layers=[HierarchicalReasoningModel_ACTV1Block(self.config.settings_hrm11) for _i in range(self.config.L_layers)],
+            layers=[self.config.settings_hrm11 for _i in range(self.config.L_layers)],
         )
 
         # Initial states
         self.H_init = nn.Buffer(
-            trunc_normal_init_(torch.empty(self.config.settings_hrm11.attention.embed_dim, dtype=self.forward_dtype), std=1),
+            trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=dtype), std=1),
             persistent=True,
         )
         self.L_init = nn.Buffer(
-            trunc_normal_init_(torch.empty(self.config.settings_hrm11.attention.embed_dim, dtype=self.forward_dtype), std=1),
+            trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=dtype), std=1),
             persistent=True,
         )
 
@@ -258,56 +173,23 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
             self.q_head.weight.zero_()
             self.q_head.bias.fill_(-5)  # type: ignore
 
-    def _input_embeddings(self, input: Tensor) -> Tensor:
-        # Token embedding
-        embedding = self.embed_tokens(input.to(torch.int32))
-
-        # Position embeddings
-        if self.config.pos_encodings == "learned":
-            # scale by 1/sqrt(2) to maintain forward variance
-            embedding = 0.707106781 * (embedding + self.embed_pos.weight.to(self.forward_dtype))
-
-        # Scale
-        return self.embed_scale * embedding
-
-    def empty_carry(self, batch_size: int):
-        return HierarchicalReasoningModel_ACTV1InnerCarry(
-            z_H=torch.empty(
-                batch_size,
-                self.config.seq_len,
-                self.config.hidden_size,
-                dtype=self.forward_dtype,
-            ),
-            z_L=torch.empty(
-                batch_size,
-                self.config.seq_len,
-                self.config.hidden_size,
-                dtype=self.forward_dtype,
-            ),
+    def empty_carry(self, batch_size: int) -> InnerState:
+        config = self.config
+        return InnerState(
+            z_H=torch.empty(batch_size, config.vocab_size, config.hidden_size),
+            # dtype=self.dtype,  # TODO: resolve dtype correctly across the model
+            z_L=torch.empty(batch_size, config.vocab_size, config.hidden_size),
+            # dtype=self.dtype,  # TODO: resolve dtype correctly across the model
         )
 
-    def reset_carry(
-        self,
-        reset_flag: Tensor,
-        carry: HierarchicalReasoningModel_ACTV1InnerCarry,
-    ):
-        return HierarchicalReasoningModel_ACTV1InnerCarry(
+    def reset_carry(self, reset_flag: Tensor, carry: InnerState):
+        return InnerState(
             z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
             z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
         )
 
-    def forward(
-        self,
-        carry: HierarchicalReasoningModel_ACTV1InnerCarry,
-        batch: Dict[str, Tensor],
-    ) -> Tuple[
-        HierarchicalReasoningModel_ACTV1InnerCarry,
-        Tensor,
-        Tuple[Tensor, Tensor],
-    ]:
-        seq_info = dict(
-            cos_sin=self.rotary_emb() if hasattr(self, "rotary_emb") else None,
-        )
+    def forward(self, carry: InnerState, batch: Dict[str, Tensor]) -> Tuple[InnerState, Tensor, Tuple[Tensor, Tensor]]:
+        seq_info = dict(cos_sin=self.rotary_emb() if hasattr(self, "rotary_emb") else None)
 
         # Input encoding
         input_embeddings = self._input_embeddings(batch["inputs"])
@@ -331,13 +213,22 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         z_H = self.H_level(z_H, z_L, **seq_info)
 
         # LM Outputs
-        new_carry = HierarchicalReasoningModel_ACTV1InnerCarry(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
+        new_carry = InnerState(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
         output = self.lm_head(z_H)
 
         # Q head
         q_logits = self.q_head(z_H[:, 0]).to(torch.float32)
 
         return new_carry, output, (q_logits[..., 0], q_logits[..., 1])
+
+    def _input_embeddings(self, input: Tensor) -> Tensor:
+        embedding = self.embed_tokens(input.to(torch.int32))
+        if self.config.pos_encodings == "learned":  # TODO: Can we move to LearnedPosEmbedding.forward?
+            # scale by 1/sqrt(2) to maintain forward variance
+            embedding = 0.707106781 * (embedding + self.embed_pos.weight.to(self.forward_dtype))
+
+        # Scale
+        return self.embed_scale * embedding
 
 
 class HierarchicalReasoningModel_ACTV1(nn.Module):
