@@ -155,7 +155,7 @@ class Attention(nn.Module):
         v = v.transpose(1, 2)
         k, v = self._expand_kv_heads(k, v)
 
-        # `is_causal` is handled by SDPA; `attn_mask` is optional and may encode
+        # `is_causal` is handled by SDPA; `attn_mask` is optional and may embed_inputs
         # padding, block masks, etc.
         attn = F.scaled_dot_product_attention(q, k, v, attn_mask, is_causal=config.is_causal)
         attn = attn.transpose(1, 2).contiguous().view(batch_size, seq_len, config.output_size)

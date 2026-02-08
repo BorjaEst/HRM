@@ -18,7 +18,7 @@ from hrm_sn.logging.tensorboard import Logger, LoggerSettings
 from hrm_sn.loss import LossConfig
 from hrm_sn.loss.act_head import ACTLossHead
 from hrm_sn.models.hrm_v1 import Model, ModelConfig_HRM_V1
-from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1, HierarchicalReasoningModel_ACTV1Config
+from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1Config
 from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler

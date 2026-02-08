@@ -13,7 +13,8 @@ from torch.optim.lr_scheduler import LRScheduler
 from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
 from hrm_sn.loss import LossConfig
 from hrm_sn.loss.act_head import ACTLossHead
-from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1, HierarchicalReasoningModel_ACTV1Config
+from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1Config, HRModel
+from hrm_sn.training.act_controller import ACTController
 from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
@@ -30,7 +31,7 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
     # Model architecture and data
     arch: HierarchicalReasoningModel_ACTV1Config = Field(
         ...,
-        description="Architecture config. The keys in `arch.__pydantic_extra__` are passed to the model constructor.",
+        description="Architecture config composed of `network` and `act` settings used by the HRM network and ACT controller.",
     )
     dataset: PuzzleDatasetSettings = Field(
         default_factory=PuzzleDatasetSettings,
@@ -67,8 +68,8 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
 @dataclass
 class ModelState:
     carry: Any  # Model carry/state that persists across batches, initialized as None and set by the first batch
-    q_halt_logits: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the halt logits for the question, used for loss computation and evaluation
-    q_continue_logits: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the continue logits for the question, used for loss computation and evaluation
+    halt_logits: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the halt logits for the question, used for loss computation and evaluation
+    continue_logits: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the continue logits for the question, used for loss computation and evaluation
     steps: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the number of steps taken for each example, used for evaluation
 
     # Metadata
@@ -80,8 +81,9 @@ class ModelState:
 class Model(L.LightningModule):
     def __init__(self, config: ModelConfig_HRM_V1):
         super().__init__()
-        self.model = HierarchicalReasoningModel_ACTV1(config.arch)
-        self.loss_head = ACTLossHead(self.model, config.loss.name)
+        self.model = HRModel(config.arch.network)
+        self.controller = ACTController(self.model, config.arch.act)
+        self.loss_head = ACTLossHead(self.controller, config.loss.name)
         self._config = config
 
         # one backward, step two opts (legacy parity)

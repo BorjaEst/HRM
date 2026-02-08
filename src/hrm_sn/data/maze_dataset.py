@@ -41,8 +41,8 @@ def convert_subset(set_name: str, config: DataProcessConfig):
                 n = int(len(q) ** 0.5)
                 grid_size = (n, n)
 
-            inputs.append(np.frombuffer(q.encode(), dtype=np.uint8).reshape(grid_size))
-            labels.append(np.frombuffer(a.encode(), dtype=np.uint8).reshape(grid_size))
+            inputs.append(np.frombuffer(q.embed_inputs(), dtype=np.uint8).reshape(grid_size))
+            labels.append(np.frombuffer(a.embed_inputs(), dtype=np.uint8).reshape(grid_size))
 
     # If subsample_size is specified for the training set,
     # randomly sample the desired number of examples.
