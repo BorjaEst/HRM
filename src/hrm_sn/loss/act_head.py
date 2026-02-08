@@ -4,17 +4,19 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from hrm_sn.training.act_controller import ACTController, ACTControllerCarry
+
 IGNORE_LABEL_ID = -100
 
 
 class ACTLossHead(nn.Module):
-    def __init__(self, model: nn.Module, loss_type: str):
+    def __init__(self, controller: ACTController, loss_type: str):
         super().__init__()
-        self.model = model
+        self.controller = controller
         self.loss_fn = globals()[loss_type]  # TODO: Avoid using globals() for loss function lookup, consider a more explicit mapping or factory pattern
 
     def initial_carry(self, *args, **kwargs):
-        return self.model.initial_carry(*args, **kwargs)  # type: ignore
+        return self.controller.initial_carry(*args, **kwargs)
 
     def forward(
         self,
@@ -22,9 +24,9 @@ class ACTLossHead(nn.Module):
         # Model args
         **model_kwargs,
     ) -> Tuple[Any, Tensor, Dict[str, Tensor], Optional[Dict[str, Tensor]], Tensor]:
-        # Model logits
-        # B x SeqLen x D
-        new_carry, outputs = self.model(**model_kwargs)
+        carry: ACTControllerCarry = model_kwargs["carry"]
+        batch: Dict[str, Tensor] = model_kwargs["batch"]
+        new_carry, outputs = self.controller.step(carry, batch, training=self.controller.model.training)
         labels = new_carry.current_data["labels"]
 
         # Correctness
@@ -46,7 +48,7 @@ class ACTLossHead(nn.Module):
                     0,
                 ).sum(),
                 "exact_accuracy": (valid_metrics & seq_is_correct).sum(),
-                "q_halt_accuracy": (valid_metrics & ((outputs["q_halt_logits"] >= 0) == seq_is_correct)).sum(),
+                "q_halt_accuracy": (valid_metrics & ((outputs["halt_logits"] >= 0) == seq_is_correct)).sum(),
                 "steps": torch.where(valid_metrics, new_carry.steps, 0).sum(),
             }
 
@@ -54,8 +56,8 @@ class ACTLossHead(nn.Module):
         # FIXME: Assuming the batch is always full
         lm_loss = (self.loss_fn(outputs["logits"], labels, ignore_index=IGNORE_LABEL_ID) / loss_divisor).sum()
         q_halt_loss = F.binary_cross_entropy_with_logits(
-            outputs["q_halt_logits"],
-            seq_is_correct.to(outputs["q_halt_logits"].dtype),
+            outputs["halt_logits"],
+            seq_is_correct.to(outputs["halt_logits"].dtype),
             reduction="sum",
         )
 
@@ -70,7 +72,7 @@ class ACTLossHead(nn.Module):
         q_continue_loss = 0
         if "target_q_continue" in outputs:
             q_continue_loss = F.binary_cross_entropy_with_logits(
-                outputs["q_continue_logits"],
+                outputs["continue_logits"],
                 outputs["target_q_continue"],
                 reduction="sum",
             )
