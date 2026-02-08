@@ -10,17 +10,11 @@ This module provides a single dense embedding implementation:
     with explicit dtype casting.
 """
 
-from typing import Literal
-
-import torch
 import torch.nn.functional as F
 from pydantic import BaseModel, Field
 from torch import Tensor, nn
 
 from hrm_sn.utils import trunc_normal_init_
-
-# TODO: Move to types.py
-DTypeName = Literal["float16", "bfloat16", "float32"]
 
 
 class EmbeddingConfig(BaseModel, extra="forbid"):

@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, cast
 
 import torch
 from pydantic import BaseModel, Field
@@ -70,15 +70,11 @@ class ReasoningModule(nn.Module):
         return x
 
 
-# ----------------------------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------
-
-
 class HRMConfig(BaseModel, extra="allow"):
 
     transformer_block: TransformerBlockConfig = Field(
         ...,
-        description="Base transformer block configuration. This is used for constructing the reasoning modules at both H and L levels. If `block_config` is also provided, the keys in `block_config` will override those in `transformer_block` for constructing the reasoning modules.",
+        description="Base transformer block configuration. This is used for constructing the reasoning modules at both H and L levels.",
     )
 
     @property
@@ -170,41 +166,49 @@ class HRModel(nn.Module):
         self.low_level = ReasoningModule([config.transformer_block for _ in range(config.L_layers)])
 
         # Initial states
-        self.high_init = nn.Buffer(
-            trunc_normal_init_(torch.empty(config.hidden_size, dtype=dtype), std=1),
-            persistent=True,
-        )
-        self.low_init = nn.Buffer(
-            trunc_normal_init_(torch.empty(config.hidden_size, dtype=dtype), std=1),
-            persistent=True,
-        )
+        self.register_buffer("high_init", torch.empty((config.hidden_size,)), persistent=True)
+        self.register_buffer("low_init", torch.empty((config.hidden_size,)), persistent=True)
+        self.high_init = cast(Tensor, self.high_init)
+        self.low_init = cast(Tensor, self.low_init)
+
+        self.reset_parameters()
+
+    @property
+    def config(self) -> HRMConfig:
+        return self._config
+
+    def reset_parameters(self) -> None:
+        """Initialize parameters and buffers."""
+        trunc_normal_init_(self.high_init, std=1)
+        trunc_normal_init_(self.low_init, std=1)
 
         # Init Q to (almost) zero for faster learning during bootstrapping
         with torch.no_grad():
             self.halt_q_head.weight.zero_()
             self.halt_q_head.bias.fill_(-5)  # type: ignore
 
-    @property
-    def config(self) -> HRMConfig:
-        return self._config
-
     def empty_carry(self, batch_size: int) -> HRMState:
         config = self.config
         return HRMState(
-            z_H=torch.empty(batch_size, self.config.seq_len, self.config.hidden_size),
-            # dtype=self.dtype,  # TODO: resolve dtype correctly across the model
-            z_L=torch.empty(batch_size, config.seq_len, config.hidden_size),
-            # dtype=self.dtype,  # TODO: resolve dtype correctly across the model
+            z_H=self.high_init.new_empty(batch_size, config.seq_len, config.hidden_size),
+            z_L=self.low_init.new_empty(batch_size, config.seq_len, config.hidden_size),
         )
 
-    def reset_carry(self, reset_flag: Tensor, carry: HRMState):
+    def reset_carry(self, reset_flag: Tensor, carry: HRMState) -> HRMState:
+        init_H = self.high_init.view(1, 1, -1).expand_as(carry.z_H)
+        init_L = self.low_init.view(1, 1, -1).expand_as(carry.z_L)
+        mask = reset_flag.view(-1, 1, 1)
         return HRMState(
-            z_H=torch.where(reset_flag.view(-1, 1, 1), self.high_init, carry.z_H),
-            z_L=torch.where(reset_flag.view(-1, 1, 1), self.low_init, carry.z_L),
+            z_H=torch.where(mask, init_H, carry.z_H),
+            z_L=torch.where(mask, init_L, carry.z_L),
         )
 
-    def forward(self, carry: HRMState, batch: Dict[str, Tensor]) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
-        input_embeddings = self.embed_inputs(batch["inputs"])
+    def forward_act(self, carry: HRMState, batch: Dict[str, Tensor]) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
+        return self(batch["inputs"], carry=carry)
+
+    def forward(self, input_ids: Tensor, carry: Optional[HRMState] = None) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
+        carry = carry or self.empty_carry(batch_size=input_ids.shape[0])
+        input_embeddings = self.embed_inputs(input_ids)
 
         with torch.no_grad():  # Forward iterations without grad for memory efficiency
             z_H, z_L = carry.z_H, carry.z_L

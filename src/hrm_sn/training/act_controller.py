@@ -15,6 +15,8 @@ class ACTNetwork(Protocol):
 
     def reset_carry(self, reset_flag: Tensor, carry: Any) -> Any: ...
 
+    def forward_act(self, carry: Any, batch: Dict[str, Tensor]) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]: ...
+
     def __call__(self, carry: Any, batch: Dict[str, Tensor]) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]: ...
 
 
@@ -77,7 +79,10 @@ class ACTController:
             for k, v in carry.current_data.items()
         }
 
-        new_inner_carry, logits, (halt_logits, continue_logits) = self.model(new_inner_carry, new_current_data)
+        if hasattr(self.model, "forward_act"):
+            new_inner_carry, logits, (halt_logits, continue_logits) = self.model.forward_act(new_inner_carry, new_current_data)
+        else:
+            new_inner_carry, logits, (halt_logits, continue_logits) = self.model(new_inner_carry, new_current_data)
 
         outputs = {
             "logits": logits,
@@ -97,7 +102,10 @@ class ACTController:
 
                 halted = halted & (new_steps >= min_halt_steps)
 
-                next_q_halt_logits, next_q_continue_logits = self.model(new_inner_carry, new_current_data)[-1]
+                if hasattr(self.model, "forward_act"):
+                    next_q_halt_logits, next_q_continue_logits = self.model.forward_act(new_inner_carry, new_current_data)[-1]
+                else:
+                    next_q_halt_logits, next_q_continue_logits = self.model(new_inner_carry, new_current_data)[-1]
 
                 outputs["target_q_continue"] = torch.sigmoid(
                     torch.where(
