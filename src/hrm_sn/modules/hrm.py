@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field
 from torch import Tensor, nn
 
 from hrm_sn.modules.attention import Attention, AttentionConfig
-from hrm_sn.modules.embeddings import CastedEmbedding, EmbeddingsConfig
+from hrm_sn.modules.embeddings import CastedEmbedding as Embedding
 from hrm_sn.modules.mlp import SwiGLU
 from hrm_sn.modules.norms import rms_norm
-from hrm_sn.modules.projections import CastedLinear
+from hrm_sn.modules.projections import CastedLinear as Linear
 from hrm_sn.modules.rotary import RotaryEmbedding
 from hrm_sn.types import CosSin
 from hrm_sn.utils import trunc_normal_init_
@@ -156,9 +156,40 @@ class HierarchicalReasoningModel_ACTV1ReasoningModule(nn.Module):
 
 
 class SettingsHRM12(BaseModel):
-    embeddings: EmbeddingsConfig = Field(
-        default_factory=EmbeddingsConfig,
-        description="Configuration for the input embedding layer.",
+    settings_hrm11: SettingsHRM11 = Field(
+        default_factory=SettingsHRM11,
+        description="Settings for the HRM11 blocks used in the reasoning modules.",
+    )
+    vocab_size: int = Field(
+        default=30522,  # TODO: Find the correct place to place it
+        description="Vocabulary size for the token embeddings and LM head.",
+    )
+    seq_len: int = Field(
+        default=1024,  # TODO: Find the correct place to place it
+        description="Maximum sequence length for the model. This is used for positional encodings and for pre-allocating buffers.",
+    )
+    pos_encodings: Literal["RoPE", "learned"] = Field(
+        default="RoPE",
+        description="Type of positional encodings to use. Options are 'RoPE' for Rotary Positional Encodings and 'learned' for Learned Positional Embeddings.",
+    )
+    num_heads: int = Field(
+        default=8,
+        description="Number of attention heads for the multi-head attention modules. The head dimension is computed as `hidden_size // num_heads`.",
+    )
+    rope_theta: float = Field(
+        default=10000.0,
+        description="Base period for rotary positional embeddings. The period of the rotary embeddings is computed as `rope_theta ** (dim / (hidden_size // num_heads))`, where `dim` is the dimension of the rotary embeddings (i.e. `hidden_size // num_heads`).",
+    )
+
+    H_layers: int = Field(
+        default=4,
+        ge=1,
+        description="Number of transformer layers in the H-level reasoning module.",
+    )
+    L_layers: int = Field(
+        default=4,
+        ge=1,
+        description="Number of transformer layers in the L-level reasoning module.",
     )
 
     forward_dtype: Literal["float16", "bfloat16", "float32"] = Field(
@@ -174,12 +205,17 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         self.forward_dtype = getattr(torch, self.config.forward_dtype)
 
         # I/O
-        self.embed_scale = math.sqrt(self.config.hidden_size)
+        self.embed_scale = math.sqrt(self.config.settings_hrm11.attention.embed_dim)
         embed_init_std = 1.0 / self.embed_scale
 
-        self.embed_tokens = CastedEmbedding(config.embeddings)
-        self.lm_head = CastedLinear(self.config.hidden_size, self.config.vocab_size, bias=False)
-        self.q_head = CastedLinear(self.config.hidden_size, 2, bias=True)
+        self.embed_tokens = Embedding(
+            num_embeddings=self.config.settings_hrm11.attention.embed_dim,
+            embedding_dim=self.config.settings_hrm11.attention.embed_dim,
+            init_std=embed_init_std,
+            dtype=self.forward_dtype,
+        )
+        self.lm_head = Linear(self.config.settings_hrm11.attention.embed_dim, self.config.vocab_size, bias=False)
+        self.q_head = Linear(self.config.settings_hrm11.attention.embed_dim, 2, bias=True)
 
         # LM Blocks
         if self.config.pos_encodings == "rope":
@@ -189,9 +225,9 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
                 base=self.config.rope_theta,
             )
         elif self.config.pos_encodings == "learned":
-            self.embed_pos = CastedEmbedding(
+            self.embed_pos = Embedding(
                 self.config.seq_len,
-                self.config.hidden_size,
+                self.config.settings_hrm11.attention.embed_dim,
                 init_std=embed_init_std,
                 dtype=self.forward_dtype,
             )
@@ -199,16 +235,20 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
             raise NotImplementedError()
 
         # Reasoning Layers
-        self.H_level = HierarchicalReasoningModel_ACTV1ReasoningModule(layers=[HierarchicalReasoningModel_ACTV1Block(self.config) for _i in range(self.config.H_layers)])
-        self.L_level = HierarchicalReasoningModel_ACTV1ReasoningModule(layers=[HierarchicalReasoningModel_ACTV1Block(self.config) for _i in range(self.config.L_layers)])
+        self.H_level = HierarchicalReasoningModel_ACTV1ReasoningModule(
+            layers=[HierarchicalReasoningModel_ACTV1Block(self.config.settings_hrm11) for _i in range(self.config.H_layers)],
+        )
+        self.L_level = HierarchicalReasoningModel_ACTV1ReasoningModule(
+            layers=[HierarchicalReasoningModel_ACTV1Block(self.config.settings_hrm11) for _i in range(self.config.L_layers)],
+        )
 
         # Initial states
         self.H_init = nn.Buffer(
-            trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=self.forward_dtype), std=1),
+            trunc_normal_init_(torch.empty(self.config.settings_hrm11.attention.embed_dim, dtype=self.forward_dtype), std=1),
             persistent=True,
         )
         self.L_init = nn.Buffer(
-            trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=self.forward_dtype), std=1),
+            trunc_normal_init_(torch.empty(self.config.settings_hrm11.attention.embed_dim, dtype=self.forward_dtype), std=1),
             persistent=True,
         )
 
