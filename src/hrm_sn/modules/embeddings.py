@@ -85,25 +85,4 @@ class Embedding(nn.Embedding):
         return F.embedding(input, self.weight.to(self.weight.dtype))
 
 
-class LearnedPosEmbeddingConfig(EmbeddingConfig):
-    pass
-
-
-class LearnedPosEmbedding(Embedding):
-    """Dense embedding table with explicit dtype casting.
-
-    This is analogous to ``torch.nn.Embedding`` but uses this repo's truncated
-    LeCun normal initialization and casts ``weight`` to a configured compute
-    dtype on each forward pass.
-    """
-
-    def __init__(self, config: LearnedPosEmbeddingConfig, device=None, dtype=None):
-        super().__init__(config, device=device, dtype=dtype)
-
-    def forward(self, input: Tensor) -> Tensor:
-        # # scale by 1/sqrt(2) to maintain forward variance
-        # input = 0.707106781 * (input + self.weight)
-        return super().forward(input)
-
-
-__all__ = ["LearnedPosEmbedding", "LearnedPosEmbeddingConfig", "Embedding", "EmbeddingConfig"]
+__all__ = ["Embedding", "EmbeddingConfig"]

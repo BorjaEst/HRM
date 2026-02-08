@@ -102,29 +102,21 @@ class HierarchicalReasoningModel_ACTV1Config(BaseModel, extra="forbid"):
         description="Exploration probability for ACT halting.",
     )
 
-    @property
-    def block_config(self) -> "SettingsHRM11":
-        """Materialize the transformer block configuration used by HRM layers."""
-        return SettingsHRM11(
-            embedding_dim=self.hidden_size,
-            num_heads=self.num_heads,
-            num_kv_heads=self.num_kv_heads,
-            is_causal=self.is_causal,
-            rms_norm_eps=self.rms_norm_eps,
-            expansion=self.expansion,
-        )
-
 
 # ----------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------
 
 
-class SettingsHRM11(AttentionConfig, BaseModel, extra="forbid"):
+class SettingsHRM11(BaseModel, extra="forbid"):
+
+    attention: AttentionConfig = Field(
+        ...,
+        description="Attention configuration used for constructing the attention modules in the transformer layers. The keys in `attention` are passed to the attention constructor.",
+    )
 
     @property
-    def attention(self) -> AttentionConfig:
-        """Attention configuration used for constructing the attention modules in the transformer layers."""
-        return AttentionConfig.model_validate(self, from_attributes=True)
+    def hidden_size(self) -> int:
+        return self.attention.embedding_dim
 
     rms_norm_eps: float = Field(
         default=1e-5,
@@ -143,7 +135,7 @@ class HierarchicalReasoningModel_ACTV1Block(nn.Module):
         self._config = config
 
         self.self_attn = Attention(config.attention)
-        self.mlp = SwiGLU(config.embedding_dim, config.expansion)
+        self.mlp = SwiGLU(config.hidden_size, config.expansion)
         self.norm_eps = config.rms_norm_eps
 
     @property
