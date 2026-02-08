@@ -13,96 +13,6 @@ from hrm_sn.modules.norms import rms_norm
 from hrm_sn.modules.projections import CastedLinear as Linear
 from hrm_sn.utils import trunc_normal_init_
 
-
-@dataclass
-class InnerState:
-    z_H: Tensor
-    z_L: Tensor
-
-
-@dataclass
-class HierarchicalReasoningModel_ACTV1Carry:
-    inner_carry: InnerState
-
-    steps: Tensor
-    halted: Tensor
-
-    current_data: Dict[str, Tensor]
-
-
-class HierarchicalReasoningModel_ACTV1Config(BaseModel, extra="forbid"):
-    """Configuration for HRM ACT v1 with learned absolute positional embeddings."""
-
-    seq_len: int = Field(
-        ...,
-        ge=1,
-        description="Sequence length for the model (number of tokens per example).",
-    )
-    vocab_size: int = Field(
-        ...,
-        ge=1,
-        description="Vocabulary size for token embeddings and LM head.",
-    )
-    hidden_size: int = Field(
-        ...,
-        ge=1,
-        description="Embedding dimension for token and positional embeddings.",
-    )
-    num_heads: int = Field(
-        ...,
-        ge=1,
-        description="Number of attention heads.",
-    )
-    num_kv_heads: Optional[int] = Field(
-        default=None,
-        description="Number of key/value heads for grouped-query attention. Defaults to num_heads.",
-    )
-    is_causal: bool = Field(
-        default=False,
-        description="Whether attention is causal.",
-    )
-    expansion: float = Field(
-        default=4.0,
-        gt=1.0,
-        description="Expansion factor for MLP layers.",
-    )
-    rms_norm_eps: float = Field(
-        default=1e-5,
-        description="Epsilon value for RMS normalization layers.",
-    )
-    H_cycles: int = Field(
-        ...,
-        ge=1,
-        description="Number of H-level reasoning cycles.",
-    )
-    L_cycles: int = Field(
-        ...,
-        ge=1,
-        description="Number of L-level reasoning cycles.",
-    )
-    H_layers: int = Field(
-        default=4,
-        ge=1,
-        description="Number of transformer layers in the H-level reasoning module.",
-    )
-    L_layers: int = Field(
-        default=4,
-        ge=1,
-        description="Number of transformer layers in the L-level reasoning module.",
-    )
-    halt_max_steps: int = Field(
-        ...,
-        ge=1,
-        description="Maximum number of ACT steps.",
-    )
-    halt_exploration_prob: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="Exploration probability for ACT halting.",
-    )
-
-
 # ----------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------
 
@@ -242,6 +152,12 @@ class SettingsHRM12(BaseModel, extra="allow"):
     )
 
 
+@dataclass
+class HRMState:
+    z_H: Tensor  # Higher-level state tensor of shape [batch, seq_len, hidden_size].
+    z_L: Tensor  # Lower-level state tensor of shape [batch, seq_len, hidden_size].
+
+
 class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
     def __init__(self, config: SettingsHRM12, device=None, dtype=None) -> None:
         super().__init__()
@@ -270,7 +186,6 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
             persistent=True,
         )
 
-        # Q head special init
         # Init Q to (almost) zero for faster learning during bootstrapping
         with torch.no_grad():
             self.q_head.weight.zero_()
@@ -280,22 +195,22 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
     def config(self) -> SettingsHRM12:
         return self._config
 
-    def empty_carry(self, batch_size: int) -> InnerState:
+    def empty_carry(self, batch_size: int) -> HRMState:
         config = self.config
-        return InnerState(
+        return HRMState(
             z_H=torch.empty(batch_size, self.config.seq_len, self.config.hidden_size),
             # dtype=self.dtype,  # TODO: resolve dtype correctly across the model
             z_L=torch.empty(batch_size, config.seq_len, config.hidden_size),
             # dtype=self.dtype,  # TODO: resolve dtype correctly across the model
         )
 
-    def reset_carry(self, reset_flag: Tensor, carry: InnerState):
-        return InnerState(
+    def reset_carry(self, reset_flag: Tensor, carry: HRMState):
+        return HRMState(
             z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
             z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
         )
 
-    def forward(self, carry: InnerState, batch: Dict[str, Tensor]) -> Tuple[InnerState, Tensor, Tuple[Tensor, Tensor]]:
+    def forward(self, carry: HRMState, batch: Dict[str, Tensor]) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
         input_embeddings = self.encode(batch["inputs"])
 
         with torch.no_grad():  # Forward iterations without grad for memory efficiency
@@ -312,7 +227,7 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         z_H = self.H_level(z_H, z_L)
 
         # LM Outputs
-        new_carry = InnerState(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
+        new_carry = HRMState(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
         output = self.lm_head(z_H)
 
         # Q head
@@ -345,6 +260,93 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
 
         # Scale
         return self.config.embedding_scale * (token_embeddings + pos_embeddings)
+
+
+# ----------------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------------------------------------------
+
+
+class HierarchicalReasoningModel_ACTV1Config(BaseModel, extra="forbid"):
+    """Configuration for HRM ACT v1 with learned absolute positional embeddings."""
+
+    seq_len: int = Field(
+        ...,
+        ge=1,
+        description="Sequence length for the model (number of tokens per example).",
+    )
+    vocab_size: int = Field(
+        ...,
+        ge=1,
+        description="Vocabulary size for token embeddings and LM head.",
+    )
+    hidden_size: int = Field(
+        ...,
+        ge=1,
+        description="Embedding dimension for token and positional embeddings.",
+    )
+    num_heads: int = Field(
+        ...,
+        ge=1,
+        description="Number of attention heads.",
+    )
+    num_kv_heads: Optional[int] = Field(
+        default=None,
+        description="Number of key/value heads for grouped-query attention. Defaults to num_heads.",
+    )
+    is_causal: bool = Field(
+        default=False,
+        description="Whether attention is causal.",
+    )
+    expansion: float = Field(
+        default=4.0,
+        gt=1.0,
+        description="Expansion factor for MLP layers.",
+    )
+    rms_norm_eps: float = Field(
+        default=1e-5,
+        description="Epsilon value for RMS normalization layers.",
+    )
+    H_cycles: int = Field(
+        ...,
+        ge=1,
+        description="Number of H-level reasoning cycles.",
+    )
+    L_cycles: int = Field(
+        ...,
+        ge=1,
+        description="Number of L-level reasoning cycles.",
+    )
+    H_layers: int = Field(
+        default=4,
+        ge=1,
+        description="Number of transformer layers in the H-level reasoning module.",
+    )
+    L_layers: int = Field(
+        default=4,
+        ge=1,
+        description="Number of transformer layers in the L-level reasoning module.",
+    )
+    halt_max_steps: int = Field(
+        ...,
+        ge=1,
+        description="Maximum number of ACT steps.",
+    )
+    halt_exploration_prob: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Exploration probability for ACT halting.",
+    )
+
+
+@dataclass
+class HierarchicalReasoningModel_ACTV1Carry:
+    inner_carry: HRMState
+
+    steps: Tensor
+    halted: Tensor
+
+    current_data: Dict[str, Tensor]
 
 
 class HierarchicalReasoningModel_ACTV1(nn.Module):
