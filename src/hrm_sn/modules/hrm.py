@@ -13,11 +13,8 @@ from hrm_sn.modules.norms import rms_norm
 from hrm_sn.modules.projections import CastedLinear as Linear
 from hrm_sn.utils import trunc_normal_init_
 
-# ----------------------------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------
 
-
-class SettingsHRM11(BaseModel, extra="forbid"):
+class TransformerBlockConfig(BaseModel, extra="forbid"):
 
     attention: AttentionConfig = Field(
         ...,
@@ -39,8 +36,8 @@ class SettingsHRM11(BaseModel, extra="forbid"):
     )
 
 
-class HierarchicalReasoningModel_ACTV1Block(nn.Module):
-    def __init__(self, config: SettingsHRM11) -> None:
+class TransformerBlock(nn.Module):
+    def __init__(self, config: TransformerBlockConfig) -> None:
         super().__init__()
         self._config = config
 
@@ -49,7 +46,7 @@ class HierarchicalReasoningModel_ACTV1Block(nn.Module):
         self.norm_eps = config.rms_norm_eps
 
     @property
-    def config(self) -> SettingsHRM11:
+    def config(self) -> TransformerBlockConfig:
         return self._config
 
     def forward(self, x: Tensor) -> Tensor:
@@ -59,11 +56,11 @@ class HierarchicalReasoningModel_ACTV1Block(nn.Module):
         return x
 
 
-class HierarchicalReasoningModel_ACTV1ReasoningModule(nn.Module):
-    def __init__(self, layers: List[SettingsHRM11]):
+class ReasoningModule(nn.Module):
+    def __init__(self, layers: List[TransformerBlockConfig]):
         super().__init__()
 
-        modules = [HierarchicalReasoningModel_ACTV1Block(config) for config in layers]
+        modules = [TransformerBlock(config) for config in layers]
         self.layers = torch.nn.ModuleList(modules)
 
     def forward(self, x: Tensor, input_injection: Tensor) -> Tensor:
@@ -77,17 +74,17 @@ class HierarchicalReasoningModel_ACTV1ReasoningModule(nn.Module):
 # ----------------------------------------------------------------------------------------------------------
 
 
-class SettingsHRM12(BaseModel, extra="allow"):
+class HRMConfig(BaseModel, extra="allow"):
 
-    settings_hrm11: SettingsHRM11 = Field(
+    transformer_block: TransformerBlockConfig = Field(
         ...,
-        description="Base transformer block configuration. This is used for constructing the reasoning modules at both H and L levels. If `block_config` is also provided, the keys in `block_config` will override those in `settings_hrm11` for constructing the reasoning modules.",
+        description="Base transformer block configuration. This is used for constructing the reasoning modules at both H and L levels. If `block_config` is also provided, the keys in `block_config` will override those in `transformer_block` for constructing the reasoning modules.",
     )
 
     @property
     def hidden_size(self) -> int:
         """Convenience property to access hidden size from the attention config."""
-        return self.settings_hrm11.hidden_size
+        return self.transformer_block.hidden_size
 
     @property
     def embedding_dim(self) -> int:
@@ -158,41 +155,37 @@ class HRMState:
     z_L: Tensor  # Lower-level state tensor of shape [batch, seq_len, hidden_size].
 
 
-class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
-    def __init__(self, config: SettingsHRM12, device=None, dtype=None) -> None:
+class HRModel(nn.Module):
+    def __init__(self, config: HRMConfig, device=None, dtype=None) -> None:
         super().__init__()
         self._config = config
 
         self.embed_tokens = Embedding(config.token_embeddings)
         self.embed_pos = Embedding(config.pos_embeddings)
         self.lm_head = Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.q_head = Linear(config.hidden_size, 2, bias=True)
+        self.halt_q_head = Linear(config.hidden_size, 2, bias=True)
 
         # Reasoning Layers
-        self.H_level = HierarchicalReasoningModel_ACTV1ReasoningModule(
-            layers=[config.settings_hrm11 for _i in range(config.H_layers)],
-        )
-        self.L_level = HierarchicalReasoningModel_ACTV1ReasoningModule(
-            layers=[config.settings_hrm11 for _i in range(config.L_layers)],
-        )
+        self.high_level = ReasoningModule([config.transformer_block for _ in range(config.H_layers)])
+        self.low_level = ReasoningModule([config.transformer_block for _ in range(config.L_layers)])
 
         # Initial states
-        self.H_init = nn.Buffer(
+        self.high_init = nn.Buffer(
             trunc_normal_init_(torch.empty(config.hidden_size, dtype=dtype), std=1),
             persistent=True,
         )
-        self.L_init = nn.Buffer(
+        self.low_init = nn.Buffer(
             trunc_normal_init_(torch.empty(config.hidden_size, dtype=dtype), std=1),
             persistent=True,
         )
 
         # Init Q to (almost) zero for faster learning during bootstrapping
         with torch.no_grad():
-            self.q_head.weight.zero_()
-            self.q_head.bias.fill_(-5)  # type: ignore
+            self.halt_q_head.weight.zero_()
+            self.halt_q_head.bias.fill_(-5)  # type: ignore
 
     @property
-    def config(self) -> SettingsHRM12:
+    def config(self) -> HRMConfig:
         return self._config
 
     def empty_carry(self, batch_size: int) -> HRMState:
@@ -206,47 +199,45 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
 
     def reset_carry(self, reset_flag: Tensor, carry: HRMState):
         return HRMState(
-            z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
-            z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
+            z_H=torch.where(reset_flag.view(-1, 1, 1), self.high_init, carry.z_H),
+            z_L=torch.where(reset_flag.view(-1, 1, 1), self.low_init, carry.z_L),
         )
 
     def forward(self, carry: HRMState, batch: Dict[str, Tensor]) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
-        input_embeddings = self.encode(batch["inputs"])
+        input_embeddings = self.embed_inputs(batch["inputs"])
 
         with torch.no_grad():  # Forward iterations without grad for memory efficiency
             z_H, z_L = carry.z_H, carry.z_L
 
-            z_L = self.cycle_lower(z_L, z_H, input_embeddings)
-            z_H = self.cycle_higher(z_H, z_L, input_embeddings, n_cycles=self.config.H_cycles - 1)
-            z_L = self.cycle_lower(z_L, z_H, input_embeddings, n_cycles=self.config.L_cycles - 1)
-
-        assert not z_H.requires_grad and not z_L.requires_grad
+            z_L = self.run_low_cycles(z_L, z_H, input_embeddings)
+            z_H = self.run_high_cycles(z_H, z_L, input_embeddings, n_cycles=self.config.H_cycles - 1)
+            z_L = self.run_low_cycles(z_L, z_H, input_embeddings, n_cycles=self.config.L_cycles - 1)
 
         # 1-step grad
-        z_L = self.L_level(z_L, z_H + input_embeddings)
-        z_H = self.H_level(z_H, z_L)
+        z_L = self.low_level(z_L, z_H + input_embeddings)
+        z_H = self.high_level(z_H, z_L)
 
         # LM Outputs
         new_carry = HRMState(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
         output = self.lm_head(z_H)
 
         # Q head
-        q_logits = self.q_head(z_H[:, 0]).to(torch.float32)
+        halt_q_logits = self.halt_q_head(z_H[:, 0]).to(torch.float32)
 
-        return new_carry, output, (q_logits[..., 0], q_logits[..., 1])
+        return new_carry, output, (halt_q_logits[..., 0], halt_q_logits[..., 1])
 
-    def cycle_higher(self, z_H: Tensor, z_L: Tensor, x: Tensor, n_cycles: Optional[int] = None) -> Tensor:
+    def run_high_cycles(self, z_H: Tensor, z_L: Tensor, x: Tensor, n_cycles: Optional[int] = None) -> Tensor:
         for _ in range(n_cycles or self.config.H_cycles):
-            z_H = self.H_level(z_H, z_L)
-            z_L = self.cycle_lower(z_L, z_H, x)
+            z_H = self.high_level(z_H, z_L)
+            z_L = self.run_low_cycles(z_L, z_H, x)
         return z_H
 
-    def cycle_lower(self, z_L: Tensor, z_H: Tensor, x: Tensor, n_cycles: Optional[int] = None) -> Tensor:
+    def run_low_cycles(self, z_L: Tensor, z_H: Tensor, x: Tensor, n_cycles: Optional[int] = None) -> Tensor:
         for _ in range(n_cycles or self.config.L_cycles):
-            z_L = self.L_level(z_L, z_H + x)
+            z_L = self.low_level(z_L, z_H + x)
         return z_L
 
-    def encode(self, input: Tensor) -> Tensor:
+    def embed_inputs(self, input: Tensor) -> Tensor:
         if input.ndim != 2:
             raise ValueError(f"Expected inputs with shape [batch, seq_len], got {tuple(input.shape)}")
 
@@ -260,167 +251,3 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
 
         # Scale
         return self.config.embedding_scale * (token_embeddings + pos_embeddings)
-
-
-# ----------------------------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------
-
-
-class HierarchicalReasoningModel_ACTV1Config(BaseModel, extra="forbid"):
-    """Configuration for HRM ACT v1 with learned absolute positional embeddings."""
-
-    seq_len: int = Field(
-        ...,
-        ge=1,
-        description="Sequence length for the model (number of tokens per example).",
-    )
-    vocab_size: int = Field(
-        ...,
-        ge=1,
-        description="Vocabulary size for token embeddings and LM head.",
-    )
-    hidden_size: int = Field(
-        ...,
-        ge=1,
-        description="Embedding dimension for token and positional embeddings.",
-    )
-    num_heads: int = Field(
-        ...,
-        ge=1,
-        description="Number of attention heads.",
-    )
-    num_kv_heads: Optional[int] = Field(
-        default=None,
-        description="Number of key/value heads for grouped-query attention. Defaults to num_heads.",
-    )
-    is_causal: bool = Field(
-        default=False,
-        description="Whether attention is causal.",
-    )
-    expansion: float = Field(
-        default=4.0,
-        gt=1.0,
-        description="Expansion factor for MLP layers.",
-    )
-    rms_norm_eps: float = Field(
-        default=1e-5,
-        description="Epsilon value for RMS normalization layers.",
-    )
-    H_cycles: int = Field(
-        ...,
-        ge=1,
-        description="Number of H-level reasoning cycles.",
-    )
-    L_cycles: int = Field(
-        ...,
-        ge=1,
-        description="Number of L-level reasoning cycles.",
-    )
-    H_layers: int = Field(
-        default=4,
-        ge=1,
-        description="Number of transformer layers in the H-level reasoning module.",
-    )
-    L_layers: int = Field(
-        default=4,
-        ge=1,
-        description="Number of transformer layers in the L-level reasoning module.",
-    )
-    halt_max_steps: int = Field(
-        ...,
-        ge=1,
-        description="Maximum number of ACT steps.",
-    )
-    halt_exploration_prob: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="Exploration probability for ACT halting.",
-    )
-
-
-@dataclass
-class HierarchicalReasoningModel_ACTV1Carry:
-    inner_carry: HRMState
-
-    steps: Tensor
-    halted: Tensor
-
-    current_data: Dict[str, Tensor]
-
-
-class HierarchicalReasoningModel_ACTV1(nn.Module):
-    """ACT wrapper."""
-
-    def __init__(self, config: HierarchicalReasoningModel_ACTV1Config):
-        super().__init__()
-        self.config = config
-        self.inner = HierarchicalReasoningModel_ACTV1_Inner(config)
-
-    def initial_carry(self, batch: Dict[str, Tensor]):
-        batch_size = batch["inputs"].shape[0]
-
-        return HierarchicalReasoningModel_ACTV1Carry(
-            inner_carry=self.inner.empty_carry(batch_size),  # Empty is expected, it will be reseted in first pass as all sequences are halted.
-            steps=torch.zeros((batch_size,), dtype=torch.int32),
-            halted=torch.ones((batch_size,), dtype=torch.bool),  # Default to halted
-            current_data={k: torch.empty_like(v) for k, v in batch.items()},
-        )
-
-    def forward(
-        self,
-        carry: HierarchicalReasoningModel_ACTV1Carry,
-        batch: Dict[str, Tensor],
-    ) -> Tuple[HierarchicalReasoningModel_ACTV1Carry, Dict[str, Tensor]]:
-        # Update data, carry (removing halted sequences)
-        new_inner_carry = self.inner.reset_carry(carry.halted, carry.inner_carry)
-
-        new_steps = torch.where(carry.halted, 0, carry.steps)
-
-        new_current_data = {k: torch.where(carry.halted.view((-1,) + (1,) * (batch[k].ndim - 1)), batch[k], v) for k, v in carry.current_data.items()}
-
-        # Forward inner model
-        new_inner_carry, logits, (q_halt_logits, q_continue_logits) = self.inner(new_inner_carry, new_current_data)
-
-        outputs = {
-            "logits": logits,
-            "q_halt_logits": q_halt_logits,
-            "q_continue_logits": q_continue_logits,
-        }
-
-        with torch.no_grad():
-            # Step
-            new_steps = new_steps + 1
-            is_last_step = new_steps >= self.config.halt_max_steps
-
-            halted = is_last_step
-
-            # if training, and ACT is enabled
-            if self.training and (self.config.halt_max_steps > 1):
-                # Halt signal
-                # NOTE: During evaluation, always use max steps, this is to guarantee the same halting steps inside a batch for batching purposes
-                halted = halted | (q_halt_logits > q_continue_logits)
-
-                # Exploration
-                min_halt_steps = (torch.rand_like(q_halt_logits) < self.config.halt_exploration_prob) * torch.randint_like(new_steps, low=2, high=self.config.halt_max_steps + 1)
-
-                halted = halted & (new_steps >= min_halt_steps)
-
-                # Compute target Q
-                # NOTE: No replay buffer and target networks for computing target Q-value.
-                # As batch_size is large, there're many parallel envs.
-                # Similar concept as PQN https://arxiv.org/abs/2407.04811
-                next_q_halt_logits, next_q_continue_logits = self.inner(new_inner_carry, new_current_data)[-1]
-
-                outputs["target_q_continue"] = torch.sigmoid(
-                    torch.where(
-                        is_last_step,
-                        next_q_halt_logits,
-                        torch.maximum(next_q_halt_logits, next_q_continue_logits),
-                    )
-                )
-
-        return (
-            HierarchicalReasoningModel_ACTV1Carry(new_inner_carry, new_steps, halted, new_current_data),
-            outputs,
-        )
