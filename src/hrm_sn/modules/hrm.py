@@ -72,10 +72,9 @@ class TransformerBlock(nn.Module):
     3) SwiGLU MLP
     4) Residual + RMSNorm
 
-        Notes:
-                - This block is intentionally small and dependency-light (vanilla
-                    PyTorch).
-                - RMSNorm is applied *after* the residual add ("post-norm" style).
+    Notes:
+        - This block is intentionally small and dependency-light (vanilla PyTorch).
+        - RMSNorm is applied *after* the residual add ("post-norm" style).
     """
 
     def __init__(self, config: TransformerBlockConfig) -> None:
@@ -220,11 +219,11 @@ class HRModel(nn.Module):
         self.high_level = ReasoningModule(config.h_layers)
         self.low_level = ReasoningModule(config.l_layers)
 
-        # Initial states
-        self.register_buffer("high_init", torch.empty((config.hidden_size,)), persistent=True)
-        self.register_buffer("low_init", torch.empty((config.hidden_size,)), persistent=True)
-        self.high_init = cast(Tensor, self.high_init)
-        self.low_init = cast(Tensor, self.low_init)
+        # Fixed per-model reset vectors for recurrent state.
+        self.register_buffer("high_reset_vector", torch.empty((config.hidden_size,)), persistent=True)
+        self.register_buffer("low_reset_vector", torch.empty((config.hidden_size,)), persistent=True)
+        self.high_reset_vector = cast(Tensor, self.high_reset_vector)
+        self.low_reset_vector = cast(Tensor, self.low_reset_vector)
 
         self.reset_parameters()
 
@@ -239,8 +238,8 @@ class HRModel(nn.Module):
         Only model-owned buffers/heads are initialized here. Submodules (e.g.
         attention/MLP) initialize themselves.
         """
-        trunc_normal_init_(self.high_init, std=1)
-        trunc_normal_init_(self.low_init, std=1)
+        trunc_normal_init_(self.high_reset_vector, std=1)
+        trunc_normal_init_(self.low_reset_vector, std=1)
 
         # Initialize Q head near-zero so early training behaves predictably.
         with torch.no_grad():
@@ -250,27 +249,28 @@ class HRModel(nn.Module):
     def init_state(self, batch_size: int) -> HRMState:
         """Allocate a new state tensor with the right shape/dtype/device.
 
-        The returned state is initialized to the learned per-level initial
-        vectors via :meth:`reset_state`.
+        The returned state is initialized via :meth:`reset_state` using the
+        model-owned initial buffers (``high_init``/``low_init``). These are
+        stored in the module state but are not trainable parameters.
         """
         config = self.config
         new_state = HRMState(
-            z_H=self.high_init.new_empty(batch_size, config.seq_length, config.hidden_size),
-            z_L=self.low_init.new_empty(batch_size, config.seq_length, config.hidden_size),
+            z_H=self.high_reset_vector.new_empty(batch_size, config.seq_length, config.hidden_size),
+            z_L=self.low_reset_vector.new_empty(batch_size, config.seq_length, config.hidden_size),
         )
         reset_flag = torch.ones(batch_size, dtype=torch.bool, device=new_state.z_H.device)
         return self.reset_state(reset_flag, state=new_state)
 
     def reset_state(self, reset_flag: Tensor, state: HRMState) -> HRMState:
-        """Reset selected batch elements of the state to learned initial states.
+        """Reset selected batch elements of the state to initial states.
 
         Args:
             reset_flag: Boolean-ish tensor of shape ``[batch]`` (or broadcastable
                 to it). True entries reset the corresponding state sequences.
             state: Current state.
         """
-        init_H = self.high_init.view(1, 1, -1).expand_as(state.z_H)
-        init_L = self.low_init.view(1, 1, -1).expand_as(state.z_L)
+        init_H = self.high_reset_vector.view(1, 1, -1).expand_as(state.z_H)
+        init_L = self.low_reset_vector.view(1, 1, -1).expand_as(state.z_L)
         mask = reset_flag.view(-1, 1, 1)
         return HRMState(
             z_H=torch.where(mask, init_H, state.z_H),
