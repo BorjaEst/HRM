@@ -36,7 +36,7 @@ class TransformerBlockConfig(BaseModel, extra="forbid"):
 
     attention: AttentionConfig = Field(
         ...,
-        description="Attention configuration used for constructing the attention modules in the transformer layers. The keys in `attention` are passed to the attention constructor.",
+        description="Attention configuration used for constructing the attention modules in the transformer layers.",
     )
 
     @property
@@ -50,7 +50,7 @@ class TransformerBlockConfig(BaseModel, extra="forbid"):
     expansion: float = Field(
         default=4.0,
         gt=1.0,
-        description="Expansion factor for the MLP layers in the transformer blocks. The MLP hidden size is computed as `hidden_size * expansion`.",
+        description="Expansion factor for the MLP layers in the transformer blocks.",
     )
 
 
@@ -135,13 +135,13 @@ class HRMConfig(BaseModel, extra="allow"):
 
     @property
     def embedding_scale(self) -> float:
-        """Convenience property for scaling embeddings, computed as sqrt of hidden size divided by sqrt(2) to maintain variance."""
+        """Convenience property for scaling embeddings to maintain variance."""
         # scale by 1/sqrt(2) to maintain forward variance
         return 0.707106781 * math.sqrt(self.hidden_size)
 
     @property
     def init_std(self) -> float:
-        """Convenience property for standard deviation of truncated normal initialization, computed as the inverse of the square root of hidden size."""
+        """Convenience property for standard deviation of truncated normal initialization."""
         return 1.0 / math.sqrt(self.hidden_size)
 
     # Model parameters for input
@@ -226,7 +226,7 @@ class HRModel(nn.Module):
     trade-off between compute, memory, and training signal.
     """
 
-    def __init__(self, config: HRMConfig, device=None, dtype=None) -> None:
+    def __init__(self, config: HRMConfig) -> None:
         super().__init__()
         self._config = config
 
@@ -249,6 +249,7 @@ class HRModel(nn.Module):
 
     @property
     def config(self) -> HRMConfig:
+        """Convenience property to access the model configuration."""
         return self._config
 
     def reset_parameters(self) -> None:
@@ -265,15 +266,17 @@ class HRModel(nn.Module):
             self.halt_q_head.weight.zero_()
             self.halt_q_head.bias.fill_(-5)  # type: ignore
 
-    def empty_carry(self, batch_size: int) -> HRMState:
+    def init_state(self, batch_size: int) -> HRMState:
         """Allocate an uninitialized state state with the right shape/dtype/device."""
         config = self.config
-        return HRMState(
+        new_state = HRMState(
             z_H=self.high_init.new_empty(batch_size, config.seq_len, config.hidden_size),
             z_L=self.low_init.new_empty(batch_size, config.seq_len, config.hidden_size),
         )
+        reset_flag = torch.ones(batch_size, dtype=torch.bool, device=new_state.z_H.device)
+        return self.reset_state(reset_flag, state=new_state)
 
-    def reset_carry(self, reset_flag: Tensor, state: HRMState) -> HRMState:
+    def reset_state(self, reset_flag: Tensor, state: HRMState) -> HRMState:
         """Reset selected batch elements of the state to learned initial states.
 
         Args:
@@ -305,39 +308,38 @@ class HRModel(nn.Module):
                 state is allocated.
 
         Returns:
-            ``(new_carry, lm_logits, (halt_q0, halt_q1))`` where:
-            - ``new_carry`` contains detached states to state to the next step.
+            ``(new_state, lm_logits, (halt_q0, halt_q1))`` where:
+            - ``new_state`` contains detached states to state to the next step.
             - ``lm_logits`` has shape ``[batch, seq_len, vocab_size]``.
             - Halt Q logits are per-example (computed from position 0).
         """
-        state = state or self.empty_carry(batch_size=input_ids.shape[0])
+        state = state or self.init_state(batch_size=input_ids.shape[0])
         x = self.embed_inputs(input_ids)
 
         # Forward iterations without grad for memory efficiency.
         # The final update at each level is executed with gradients below.
         with torch.no_grad():
-            self.run_low_cycles(x, state)
             self.run_high_cycles(x, state, n_cycles=self.config.H_cycles - 1)
             self.run_low_cycles(x, state, n_cycles=self.config.L_cycles - 1)
 
         # One-step grad: provide a training signal while keeping memory bounded.
-        z_L = self.low_level(state.z_L, state.z_H + x)
-        z_H = self.high_level(state.z_H, state.z_L)
+        z_L = state.z_L = self.low_level(state.z_L, state.z_H + x)
+        z_H = state.z_H = self.high_level(state.z_H, state.z_L)
 
         # Carry is detached so the next step does not backprop through time.
-        new_carry = HRMState(z_H=z_H.detach(), z_L=z_L.detach())
+        new_state = HRMState(z_H=z_H.detach(), z_L=z_L.detach())
         # Language-modeling head predicts a token distribution at each position.
         output = self.lm_head(z_H)
         # Halt Q head is computed from a single "summary" token (position 0).
         halt_q_logits = self.halt_q_head(z_H[:, 0]).to(torch.float32)
 
-        return new_carry, output, (halt_q_logits[..., 0], halt_q_logits[..., 1])
+        return new_state, output, (halt_q_logits[..., 0], halt_q_logits[..., 1])
 
     def run_high_cycles(self, x: Tensor, state: HRMState, n_cycles: Optional[int] = None) -> Tensor:
         """Iterate high-level cycles, interleaving low-level updates."""
         for _ in range(n_cycles or self.config.H_cycles):
-            state.z_H = self.high_level(state.z_H, state.z_L)
             state.z_L = self.run_low_cycles(x, state)
+            state.z_H = self.high_level(state.z_H, state.z_L)
         return state.z_H
 
     def run_low_cycles(self, x: Tensor, state: HRMState, n_cycles: Optional[int] = None) -> Tensor:

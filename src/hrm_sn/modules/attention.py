@@ -12,7 +12,7 @@ primitive used throughout the model.
 from typing import Optional
 
 import torch.nn.functional as F
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from torch import Tensor, nn
 
 from hrm_sn.modules.projections import CastedLinear
@@ -40,9 +40,10 @@ class AttentionConfig(BaseModel, extra="forbid"):
         description="Number of attention heads.",
     )
 
-    @field_validator("embedding_dim", mode="before")
-    def _check_embed_dim(cls, v, values):
-        num_heads = values.get("num_heads")
+    @field_validator("embedding_dim")
+    @classmethod
+    def _check_embed_dim(cls, v: int, info: ValidationInfo) -> int:
+        num_heads = info.data.get("num_heads")
         if num_heads is not None and v % num_heads != 0:
             raise ValueError(f"embedding_dim ({v}) must be divisible by num_heads ({num_heads}).")
         return v
@@ -52,6 +53,12 @@ class AttentionConfig(BaseModel, extra="forbid"):
         frozen=True,
         description="Number of key/value heads for grouped-query attention. If None, defaults to `num_heads` (no sharing).",
     )
+
+    @field_validator("num_kv_heads")
+    @classmethod
+    def _default_num_kv_heads(cls, v: int | None, info: ValidationInfo) -> int:
+        num_heads = info.data.get("num_heads")
+        return v if v is not None else num_heads  # type: ignore[return-value]
 
     @field_validator("num_kv_heads", mode="before")
     def _set_num_kv_heads(cls, v, values):
