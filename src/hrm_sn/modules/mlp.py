@@ -5,10 +5,18 @@ Transformer layers.
 """
 
 import torch.nn.functional as F
+from pydantic import BaseModel, Field
 from torch import nn
 
 from hrm_sn.modules.projections import CastedLinear
 from hrm_sn.utils import _find_multiple
+
+
+class MLPConfig(BaseModel, extra="forbid"):
+    """Configuration for the MLP (feed-forward) block used in HRM transformer layers."""
+
+    hidden_size: int = Field(..., ge=32, frozen=True, description="Hidden size of the MLP block.")
+    expansion: float = Field(default=4.0, gt=1.0, description="Expansion factor for the MLP layers in the transformer blocks.")
 
 
 class SwiGLU(nn.Module):
@@ -25,7 +33,7 @@ class SwiGLU(nn.Module):
     to a multiple of 256 for efficiency.
     """
 
-    def __init__(self, hidden_size: int, expansion: float):
+    def __init__(self, config: MLPConfig):
         """Initialize the SwiGLU block.
 
         Args:
@@ -35,10 +43,16 @@ class SwiGLU(nn.Module):
                 and then aligned to a multiple of 256.
         """
         super().__init__()
-        inter = _find_multiple(round(expansion * hidden_size * 2 / 3), 256)
+        self._config = config
 
-        self.gate_up_proj = CastedLinear(hidden_size, inter * 2, bias=False)
-        self.down_proj = CastedLinear(inter, hidden_size, bias=False)
+        inter = _find_multiple(round(config.expansion * config.hidden_size * 2 / 3), 256)
+        self.gate_up_proj = CastedLinear(config.hidden_size, inter * 2, bias=False)
+        self.down_proj = CastedLinear(inter, config.hidden_size, bias=False)
+
+    @property
+    def config(self) -> MLPConfig:
+        """Configuration of the SwiGLU block."""
+        return self._config
 
     def forward(self, x):
         """Apply the SwiGLU transformation.

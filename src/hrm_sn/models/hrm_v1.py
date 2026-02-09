@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
 from hrm_sn.loss import LossConfig
 from hrm_sn.loss.act_head import ACTLossHead
-from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1Config, HRModel
+from hrm_sn.modules.hrm import HRMConfig, HRModel
 from hrm_sn.training.act_controller import ACTController
 from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
@@ -29,7 +29,7 @@ Device = torch.device
 class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
 
     # Model architecture and data
-    arch: HierarchicalReasoningModel_ACTV1Config = Field(
+    architecture: HRMConfig = Field(
         ...,
         description="Architecture config composed of `network` and `act` settings used by the HRM network and ACT controller.",
     )
