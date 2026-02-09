@@ -1,3 +1,17 @@
+"""Hierarchical Reasoning Model (HRM) building blocks.
+
+This module implements the core HRM architecture used in this repository:
+
+- A small Transformer-style block (attention + MLP with RMSNorm residuals).
+- A *ReasoningModule* wrapper that applies a stack of blocks with an additive
+    "input injection".
+- The *HRModel*, which maintains two latent state tensors (high-level $z_H$ and
+    low-level $z_L$) and alternates update cycles between them.
+
+The model is written as a plain :class:`torch.nn.Module` so it can be reused in
+experiments (e.g., Lightning modules) without side effects.
+"""
+
 import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, cast
@@ -15,6 +29,10 @@ from hrm_sn.utils import trunc_normal_init_
 
 
 class TransformerBlockConfig(BaseModel, extra="forbid"):
+    """Configuration for a single Transformer-style block.
+
+    The hidden size is derived from the attention config (embedding dimension).
+    """
 
     attention: AttentionConfig = Field(
         ...,
@@ -37,6 +55,19 @@ class TransformerBlockConfig(BaseModel, extra="forbid"):
 
 
 class TransformerBlock(nn.Module):
+    """A minimal Transformer block with RMSNorm residuals.
+
+    Structure:
+    1) Self-attention
+    2) Residual + RMSNorm
+    3) SwiGLU MLP
+    4) Residual + RMSNorm
+
+    Notes:
+    - This block is intentionally small and dependency-light (vanilla PyTorch).
+    - RMSNorm is applied *after* the residual add (post-norm style).
+    """
+
     def __init__(self, config: TransformerBlockConfig) -> None:
         super().__init__()
         self._config = config
@@ -57,6 +88,13 @@ class TransformerBlock(nn.Module):
 
 
 class ReasoningModule(nn.Module):
+    """A stack of :class:`TransformerBlock` layers with additive input injection.
+
+    The HRM alternates between high-level and low-level reasoning modules.
+    Each module receives the current state tensor and an "injection" tensor that
+    anchors computation to the inputs and/or the other level's state.
+    """
+
     def __init__(self, layers: List[TransformerBlockConfig]):
         super().__init__()
 
@@ -71,10 +109,18 @@ class ReasoningModule(nn.Module):
 
 
 class HRMConfig(BaseModel, extra="allow"):
+    """Top-level configuration for :class:`HRModel`.
+
+    This config intentionally exposes derived convenience properties (e.g.
+    ``hidden_size``, embedding init std) to reduce duplication across components.
+
+    ``extra=allow`` is used to tolerate experiment-level config keys that are not
+    consumed by the core model.
+    """
 
     transformer_block: TransformerBlockConfig = Field(
         ...,
-        description="Base transformer block configuration. This is used for constructing the reasoning modules at both H and L levels.",
+        description="Base transformer block configuration for constructing the reasoning modules at both H and L levels.",
     )
 
     @property
@@ -98,6 +144,7 @@ class HRMConfig(BaseModel, extra="allow"):
         """Convenience property for standard deviation of truncated normal initialization, computed as the inverse of the square root of hidden size."""
         return 1.0 / math.sqrt(self.hidden_size)
 
+    # Model parameters for input
     vocab_size: int = Field(
         ...,
         ge=1,
@@ -106,9 +153,12 @@ class HRMConfig(BaseModel, extra="allow"):
 
     @property
     def token_embeddings(self) -> EmbeddingConfig:
-        """Convenience property to construct token embedding configuration from the model config."""
-        tmp = self.model_copy(update={"num_embeddings": self.vocab_size})
-        return EmbeddingConfig.model_validate(tmp, from_attributes=True)
+        """Convenience function to construct token embedding configuration from the model config."""
+        return EmbeddingConfig(
+            num_embeddings=self.vocab_size,
+            embedding_dim=self.embedding_dim,
+            init_std=self.init_std,
+        )
 
     seq_len: int = Field(
         ...,
@@ -118,10 +168,14 @@ class HRMConfig(BaseModel, extra="allow"):
 
     @property
     def pos_embeddings(self) -> EmbeddingConfig:
-        """Convenience property to construct positional embedding configuration from the model config."""
-        tmp = self.model_copy(update={"num_embeddings": self.seq_len})
-        return EmbeddingConfig.model_validate(tmp, from_attributes=True)
+        """Convenience function to construct positional embedding configuration from the model config."""
+        return EmbeddingConfig(
+            num_embeddings=self.seq_len,
+            embedding_dim=self.embedding_dim,
+            init_std=self.init_std,
+        )
 
+    # Reasoning module parameters for high level
     H_layers: int = Field(
         default=4,
         ge=1,
@@ -133,6 +187,7 @@ class HRMConfig(BaseModel, extra="allow"):
         description="Number of cycles for the H-level reasoning module.",
     )
 
+    # Reasoning module parameters for low level
     L_layers: int = Field(
         default=4,
         ge=1,
@@ -147,11 +202,30 @@ class HRMConfig(BaseModel, extra="allow"):
 
 @dataclass
 class HRMState:
+    """Recurrent state carried between forward passes.
+
+    Attributes:
+        z_H: High-level state of shape ``[batch, seq_len, hidden_size]``.
+        z_L: Low-level state of shape ``[batch, seq_len, hidden_size]``.
+    """
+
     z_H: Tensor  # Higher-level state tensor of shape [batch, seq_len, hidden_size].
     z_L: Tensor  # Lower-level state tensor of shape [batch, seq_len, hidden_size].
 
 
 class HRModel(nn.Module):
+    """Hierarchical Reasoning Model (HRM).
+
+    The model maintains two latent sequences, a high-level state ``z_H`` and a
+    low-level state ``z_L``. Computation proceeds by alternating *cycles* of
+    updates between these two levels.
+
+    Implementation detail: to reduce memory usage, the bulk of the iterative
+    updates are executed under ``torch.no_grad()`` and the final update at each
+    level is executed with gradients ("one-step grad"). This is a deliberate
+    trade-off between compute, memory, and training signal.
+    """
+
     def __init__(self, config: HRMConfig, device=None, dtype=None) -> None:
         super().__init__()
         self._config = config
@@ -178,16 +252,21 @@ class HRModel(nn.Module):
         return self._config
 
     def reset_parameters(self) -> None:
-        """Initialize parameters and buffers."""
+        """Initialize parameters and buffers.
+
+        Only model-owned buffers/heads are initialized here. Submodules (e.g.
+        attention/MLP) initialize themselves.
+        """
         trunc_normal_init_(self.high_init, std=1)
         trunc_normal_init_(self.low_init, std=1)
 
-        # Init Q to (almost) zero for faster learning during bootstrapping
+        # Initialize Q head near-zero so early training behaves predictably.
         with torch.no_grad():
             self.halt_q_head.weight.zero_()
             self.halt_q_head.bias.fill_(-5)  # type: ignore
 
     def empty_carry(self, batch_size: int) -> HRMState:
+        """Allocate an uninitialized carry state with the right shape/dtype/device."""
         config = self.config
         return HRMState(
             z_H=self.high_init.new_empty(batch_size, config.seq_len, config.hidden_size),
@@ -195,6 +274,13 @@ class HRModel(nn.Module):
         )
 
     def reset_carry(self, reset_flag: Tensor, carry: HRMState) -> HRMState:
+        """Reset selected batch elements of the carry to learned initial states.
+
+        Args:
+            reset_flag: Boolean-ish tensor of shape ``[batch]`` (or broadcastable
+                to it). True entries reset the corresponding state sequences.
+            carry: Current carry.
+        """
         init_H = self.high_init.view(1, 1, -1).expand_as(carry.z_H)
         init_L = self.low_init.view(1, 1, -1).expand_as(carry.z_L)
         mask = reset_flag.view(-1, 1, 1)
@@ -204,44 +290,79 @@ class HRModel(nn.Module):
         )
 
     def forward_act(self, carry: HRMState, batch: Dict[str, Tensor]) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
+        """Convenience wrapper for ACT-style training loops.
+
+        Expects ``batch`` to contain ``"inputs"`` with shape ``[batch, seq_len]``.
+        """
         return self(batch["inputs"], carry=carry)
 
     def forward(self, input_ids: Tensor, carry: Optional[HRMState] = None) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
+        """Run a forward pass.
+
+        Args:
+            input_ids: Token ids with shape ``[batch, seq_len]``.
+            carry: Optional previous :class:`HRMState`. If omitted, an empty
+                carry is allocated.
+
+        Returns:
+            ``(new_carry, lm_logits, (halt_q0, halt_q1))`` where:
+            - ``new_carry`` contains detached states to carry to the next step.
+            - ``lm_logits`` has shape ``[batch, seq_len, vocab_size]``.
+            - Halt Q logits are per-example (computed from position 0).
+        """
         carry = carry or self.empty_carry(batch_size=input_ids.shape[0])
         input_embeddings = self.embed_inputs(input_ids)
 
-        with torch.no_grad():  # Forward iterations without grad for memory efficiency
+        # Forward iterations without grad for memory efficiency.
+        # The final update at each level is executed with gradients below.
+        with torch.no_grad():
             z_H, z_L = carry.z_H, carry.z_L
 
             z_L = self.run_low_cycles(z_L, z_H, input_embeddings)
             z_H = self.run_high_cycles(z_H, z_L, input_embeddings, n_cycles=self.config.H_cycles - 1)
             z_L = self.run_low_cycles(z_L, z_H, input_embeddings, n_cycles=self.config.L_cycles - 1)
 
-        # 1-step grad
+        # One-step grad: provide a training signal while keeping memory bounded.
         z_L = self.low_level(z_L, z_H + input_embeddings)
         z_H = self.high_level(z_H, z_L)
 
-        # LM Outputs
-        new_carry = HRMState(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
+        # Carry is detached so the next step does not backprop through time.
+        new_carry = HRMState(z_H=z_H.detach(), z_L=z_L.detach())
+
+        # Language-modeling head predicts a token distribution at each position.
         output = self.lm_head(z_H)
 
-        # Q head
+        # Halt Q head is computed from a single "summary" token (position 0).
         halt_q_logits = self.halt_q_head(z_H[:, 0]).to(torch.float32)
 
         return new_carry, output, (halt_q_logits[..., 0], halt_q_logits[..., 1])
 
     def run_high_cycles(self, z_H: Tensor, z_L: Tensor, x: Tensor, n_cycles: Optional[int] = None) -> Tensor:
+        """Iterate high-level cycles, interleaving low-level updates."""
         for _ in range(n_cycles or self.config.H_cycles):
             z_H = self.high_level(z_H, z_L)
             z_L = self.run_low_cycles(z_L, z_H, x)
         return z_H
 
     def run_low_cycles(self, z_L: Tensor, z_H: Tensor, x: Tensor, n_cycles: Optional[int] = None) -> Tensor:
+        """Iterate low-level cycles (conditioned on high-level state and inputs)."""
         for _ in range(n_cycles or self.config.L_cycles):
             z_L = self.low_level(z_L, z_H + x)
         return z_L
 
     def embed_inputs(self, input: Tensor) -> Tensor:
+        """Embed token ids and add positional embeddings.
+
+        Args:
+            input: Integer token ids with shape ``[batch, seq_len]``.
+
+        Returns:
+            Embedded inputs with shape ``[batch, seq_len, hidden_size]``.
+
+        Raises:
+            ValueError: If input dimensionality is not 2D or if ``seq_len``
+                exceeds the configured maximum.
+        """
         if input.ndim != 2:
             raise ValueError(f"Expected inputs with shape [batch, seq_len], got {tuple(input.shape)}")
 
@@ -253,5 +374,5 @@ class HRModel(nn.Module):
         positions = torch.arange(seq_len, device=input.device)
         pos_embeddings = self.embed_pos(positions).unsqueeze(0)
 
-        # Scale
+        # Scale embeddings to keep activations in a reasonable range.
         return self.config.embedding_scale * (token_embeddings + pos_embeddings)
