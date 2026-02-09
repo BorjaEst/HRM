@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+"""RL-style controller for ACT halting with explicit TD bootstrapping.
+
+This controller mirrors DQN-style structure:
+- state: recurrent model state + per-slot step counters
+- action: halt or continue (argmax over Q logits)
+- done: episode termination (max steps or halt action)
+- TD target: bootstrap from Q at next state
+
+Note: there is no explicit per-step reward. Correctness supervision is
+provided by the loss head, while the continue Q target is bootstrapped
+from the next recurrent state.
+"""
+
 from dataclasses import dataclass
 from typing import Any, Dict, Protocol, Tuple
 
@@ -8,33 +21,48 @@ from pydantic import BaseModel, Field
 from torch import Tensor
 
 
+class ACTControllerConfig(BaseModel, extra="forbid"):
+    exploration_prob: float = Field(..., ge=0.0, le=1.0, description="Exploration probability for ACT halting.")
+    halt_max_steps: int = Field(..., ge=1, description="Maximum number of ACT steps.")
+
+
 class ACTNetwork(Protocol):
+    """Minimal interface required by the ACT controller.
+
+    Matches HRModel.forward(inputs, state=None).
+    """
+
     training: bool
 
     def init_state(self, batch_size: int) -> Any: ...
 
-    def reset_state(self, reset_flag: Tensor, carry: Any) -> Any: ...
+    def reset_state(self, reset_flag: Tensor, state: Any) -> Any: ...
 
-    def forward_act(self, carry: Any, batch: Dict[str, Tensor]) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]: ...
-
-    def __call__(self, carry: Any, batch: Dict[str, Tensor]) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]: ...
-
-
-class ACTControllerConfig(BaseModel, extra="forbid"):
-    halt_exploration_prob: float = Field(..., ge=0.0, le=1.0, description="Exploration probability for ACT halting.")
-    halt_max_steps: int = Field(..., ge=1, description="Maximum number of ACT steps.")
+    def __call__(self, inputs: Tensor, state: Any | None = None) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]: ...
 
 
 @dataclass
-class ACTControllerCarry:
-    inner_carry: Any
-    steps: Tensor
-    halted: Tensor
-    current_data: Dict[str, Tensor]
+class ACTState:
+    model_state: Any  # Recurrent state of the model (e.g. LSTM hidden states)
+    steps: Tensor  # Per-slot step counters
+    halted: Tensor  # Per-slot done/halting flags
+    data: Dict[str, Tensor]  # Per-slot data buffers (e.g. inputs) for refreshing on reset
+
+
+@dataclass
+class ACTOutput:
+    logits: Tensor  # Main output logits for loss/metrics (e.g. action logits)
+    halt_logits: Tensor  # Q logits for halting action
+    continue_logits: Tensor  # Q logits for continuing action
+    action: Tensor  # Selected action (0=halt, 1=continue)
+    target_continue: Tensor | None = None  # TD target for continue head (training only)
 
 
 class ACTController:
     """Training-time ACT controller for halting and partial-reset batch slots."""
+
+    HALT_ACTION = 0
+    CONTINUE_ACTION = 1
 
     def __init__(self, model: ACTNetwork, config: ACTControllerConfig) -> None:
         self._model = model
@@ -48,65 +76,94 @@ class ACTController:
     def config(self) -> ACTControllerConfig:
         return self._config
 
-    def initial_carry(self, batch: Dict[str, Tensor]) -> ACTControllerCarry:
+    def initial_state(self, batch: Dict[str, Tensor]) -> ACTState:
         batch_size = batch["inputs"].shape[0]
-        return ACTControllerCarry(
-            inner_carry=self.model.init_state(batch_size),
+        return ACTState(
+            model_state=self.model.init_state(batch_size),
             steps=torch.zeros((batch_size,), dtype=torch.int32),
             halted=torch.ones((batch_size,), dtype=torch.bool),
-            current_data={k: torch.empty_like(v) for k, v in batch.items()},
+            data={k: torch.empty_like(v) for k, v in batch.items()},
         )
 
-    def step(self, carry: ACTControllerCarry, batch: Dict[str, Tensor], *, training: bool) -> Tuple[ACTControllerCarry, Dict[str, Tensor]]:
-        new_inner_carry = self.model.reset_state(carry.halted, carry.inner_carry)
-        new_steps = torch.where(carry.halted, 0, carry.steps)
+    def step(self, state: ACTState, batch: Dict[str, Tensor], *, training: bool) -> Tuple[ACTState, ACTOutput]:
+        """Execute one ACT step and return new state plus outputs for loss/metrics."""
+        config = self.config  # convenience alias
 
-        new_current_data = {
-            k: torch.where(
-                carry.halted.view((-1,) + (1,) * (batch[k].ndim - 1)),
-                batch[k],
-                v,
-            )
-            for k, v in carry.current_data.items()
-        }
+        data = self.refresh_slot_data(batch, state)
+        model_state = self.reset_where_done(state)
+        model_state, logits, (q_halt, q_continue) = self.model(data["inputs"], model_state)
 
-        if hasattr(self.model, "forward_act"):
-            new_inner_carry, logits, (halt_logits, continue_logits) = self.model.forward_act(new_inner_carry, new_current_data)
-        else:
-            new_inner_carry, logits, (halt_logits, continue_logits) = self.model(new_inner_carry, new_current_data)
+        steps = torch.where(state.halted, 0, state.steps) + 1
+        action, done, is_last_step = self._select_action_and_done(q_halt, q_continue, steps, training)
 
-        outputs = {
-            "logits": logits,
-            "halt_logits": halt_logits,
-            "continue_logits": continue_logits,
-        }
+        state = ACTState(model_state=model_state, steps=steps, halted=done, data=data)
+        output = ACTOutput(logits=logits, halt_logits=q_halt, continue_logits=q_continue, action=action)
 
         with torch.no_grad():
-            new_steps = new_steps + 1
-            is_last_step = new_steps >= self.config.halt_max_steps
-            halted = is_last_step
+            if training and (config.halt_max_steps > 1):
+                output.target_continue = self.td_target_continue(data, state, is_last_step)
 
-            if training and (self.config.halt_max_steps > 1):
-                halted = halted | (halt_logits > continue_logits)
+        return state, output
 
-                min_halt_steps = (torch.rand_like(halt_logits) < self.config.halt_exploration_prob) * torch.randint_like(new_steps, low=2, high=self.config.halt_max_steps + 1)
+    def refresh_slot_data(self, batch: Dict[str, Tensor], state: ACTState) -> Dict[str, Tensor]:
+        """Replace finished slots with new batch data (episode reset).
 
-                halted = halted & (new_steps >= min_halt_steps)
+        Args:
+            batch: New batch data.
+            state: Current ACT state with done/halted flags.
 
-                if hasattr(self.model, "forward_act"):
-                    next_q_halt_logits, next_q_continue_logits = self.model.forward_act(new_inner_carry, new_current_data)[-1]
-                else:
-                    next_q_halt_logits, next_q_continue_logits = self.model(new_inner_carry, new_current_data)[-1]
+        Returns:
+            A dict with per-key tensors updated for done slots.
+        """
+        data, halted = state.data, state.halted
+        return {k: torch.where(halted.view((-1,) + (1,) * (batch[k].ndim - 1)), batch[k], data[k]) for k in batch}
 
-                outputs["target_q_continue"] = torch.sigmoid(
-                    torch.where(
-                        is_last_step,
-                        next_q_halt_logits,
-                        torch.maximum(next_q_halt_logits, next_q_continue_logits),
-                    )
-                )
+    def reset_where_done(self, state: ACTState) -> Any:
+        """Reset recurrent state for done slots (episode reset).
 
-        return ACTControllerCarry(new_inner_carry, new_steps, halted, new_current_data), outputs
+        Args:
+            state: Current ACT state with done/halted flags.
+
+        Returns:
+            New recurrent state with done slots reset.
+        """
+        model_state, halted = state.model_state, state.halted
+        return self.model.reset_state(halted, model_state)
+
+    def _select_action_and_done(self, q_halt: Tensor, q_continue: Tensor, steps: Tensor, training: bool) -> Tuple[Tensor, Tensor, Tensor]:
+        """Select halt/continue action and compute done mask.
+
+        Action is greedy (argmax over Q logits). Done is triggered by:
+        - reaching max steps
+        - halting action (training only)
+        Optional exploration delays halting by enforcing a random
+        minimum halting step for a subset of slots.
+        """
+        config = self.config  # convenience alias
+        action = torch.where(q_halt > q_continue, self.HALT_ACTION, self.CONTINUE_ACTION)
+        done = is_last_step = steps >= config.halt_max_steps
+
+        if training and (config.halt_max_steps > 1):
+            exploration_flag = torch.rand_like(q_halt) < config.exploration_prob
+            min_halt_steps = exploration_flag * torch.randint_like(steps, low=2, high=config.halt_max_steps + 1)
+
+            done = done | (action == self.HALT_ACTION)  # halt action triggers done
+            done = done & (steps >= min_halt_steps)  # Enforce min steps under exploration
+
+        return action, done, is_last_step
+
+    def td_target_continue(self, batch: Dict[str, Tensor], state: ACTState, is_last_step: Tensor) -> Tensor:
+        """Compute TD(0) target for the continue head.
+
+        Target: sigmoid(max_a Q(s_{t+1}, a)), with terminal handling.
+        """
+        inputs, model_state = batch["inputs"], state.model_state
+
+        next_q_halt, next_q_continue = self.model(inputs, model_state)[-1]
+        next_q_best = torch.maximum(next_q_halt, next_q_continue)
+
+        logits = torch.where(is_last_step, next_q_halt, next_q_best)
+        return torch.sigmoid(logits)
 
 
-__all__ = ["ACTController", "ACTControllerCarry", "ACTControllerConfig"]
+__all__ = ["ACTControllerConfig", "ACTNetwork", "ACTController", "ACTState"]

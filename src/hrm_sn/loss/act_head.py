@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from hrm_sn.training.act_controller import ACTController, ACTControllerCarry
+from hrm_sn.training.act_controller import ACTController, ACTState
 
 IGNORE_LABEL_ID = -100
 
@@ -16,7 +16,7 @@ class ACTLossHead(nn.Module):
         self.loss_fn = globals()[loss_type]  # TODO: Avoid using globals() for loss function lookup, consider a more explicit mapping or factory pattern
 
     def initial_carry(self, *args, **kwargs):
-        return self.controller.initial_carry(*args, **kwargs)
+        return self.controller.initial_state(*args, **kwargs)
 
     def forward(
         self,
@@ -24,10 +24,10 @@ class ACTLossHead(nn.Module):
         # Model args
         **model_kwargs,
     ) -> Tuple[Any, Tensor, Dict[str, Tensor], Optional[Dict[str, Tensor]], Tensor]:
-        carry: ACTControllerCarry = model_kwargs["carry"]
+        carry: ACTState = model_kwargs["carry"]
         batch: Dict[str, Tensor] = model_kwargs["batch"]
         new_carry, outputs = self.controller.step(carry, batch, training=self.controller.model.training)
-        labels = new_carry.current_data["labels"]
+        labels = new_carry.data["labels"]
 
         # Correctness
         with torch.no_grad():
@@ -70,10 +70,10 @@ class ACTLossHead(nn.Module):
 
         # Q continue (bootstrapping target loss)
         q_continue_loss = 0
-        if "target_q_continue" in outputs:
+        if "target_continue" in outputs:
             q_continue_loss = F.binary_cross_entropy_with_logits(
                 outputs["continue_logits"],
-                outputs["target_q_continue"],
+                outputs["target_continue"],
                 reduction="sum",
             )
 

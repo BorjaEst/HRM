@@ -32,7 +32,7 @@ cycles = 2
 
 # ACT (Adaptive Computation Time) Controller config
 [act_controller]
-halt_exploration_prob = 0.1
+exploration_prob = 0.1
 halt_max_steps = 10
 
 # Loss 

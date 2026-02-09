@@ -283,18 +283,11 @@ class HRModel(nn.Module):
             z_L=torch.where(mask, init_L, state.z_L),
         )
 
-    def forward_act(self, state: HRMState, batch: Dict[str, Tensor]) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
-        """Convenience wrapper for ACT-style training loops.
-
-        Expects ``batch`` to contain ``"inputs"`` with shape ``[batch, seq_length]``.
-        """
-        return self(batch["inputs"], state=state)
-
-    def forward(self, input_ids: Tensor, state: Optional[HRMState] = None) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
+    def forward(self, inputs: Tensor, state: Optional[HRMState] = None) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
         """Run a forward pass.
 
         Args:
-            input_ids: Token ids with shape ``[batch, seq_length]``.
+            inputs: Token ids with shape ``[batch, seq_length]``.
             state: Optional previous :class:`HRMState`. If omitted, an empty
                 state is allocated.
 
@@ -305,8 +298,8 @@ class HRModel(nn.Module):
             - Halt Q logits are per-example (computed from position 0).
         """
         config = self.config  # convenience alias
-        state = state or self.init_state(batch_size=input_ids.shape[0])
-        x = self.embed_inputs(input_ids)
+        state = state or self.init_state(batch_size=inputs.shape[0])
+        x = self.embed_inputs(inputs)
 
         # Forward iterations without grad for memory efficiency.
         # The final update at each level is executed with gradients below.
