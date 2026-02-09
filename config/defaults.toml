@@ -1,5 +1,6 @@
 # Default configuration for training the hierarchical reasoning model with ACT
 
+# architecture config 
 [architecture]
 vocab_size = 100
 seq_length = 1024
@@ -29,6 +30,10 @@ cycles = 2
 layers = 4
 cycles = 2
 
+# ACT (Adaptive Computation Time) Controller config
+[act_controller]
+halt_exploration_prob = 0.1
+halt_max_steps = 10
 
 # Loss 
 [loss]

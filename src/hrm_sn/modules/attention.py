@@ -60,6 +60,18 @@ class AttentionConfig(BaseModel, extra="forbid"):
         num_heads = info.data.get("num_heads")
         return v if v is not None else num_heads  # type: ignore[return-value]
 
+    @field_validator("num_kv_heads")
+    @classmethod
+    def _validate_num_kv_heads(cls, v: int, info: ValidationInfo) -> int:
+        num_heads = info.data.get("num_heads")
+        if num_heads is None:
+            return v
+        if v > num_heads:
+            raise ValueError(f"num_kv_heads ({v}) must be <= num_heads ({num_heads}).")
+        if num_heads % v != 0:
+            raise ValueError(f"num_heads ({num_heads}) must be divisible by num_kv_heads ({v}).")
+        return v
+
     @field_validator("num_kv_heads", mode="before")
     def _set_num_kv_heads(cls, v, values):
         return v if v is not None else values.get("num_heads")

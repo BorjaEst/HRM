@@ -269,9 +269,15 @@ class HRModel(nn.Module):
                 to it). True entries reset the corresponding state sequences.
             state: Current state.
         """
+        batch_size = state.z_H.shape[0]
+        if reset_flag.numel() not in {1, batch_size}:
+            raise ValueError(f"reset_flag must be broadcastable to [batch], got numel={reset_flag.numel()} for batch_size={batch_size}.")
+
+        reset_flag = reset_flag.to(torch.bool)
         init_H = self.high_reset_vector.view(1, 1, -1).expand_as(state.z_H)
         init_L = self.low_reset_vector.view(1, 1, -1).expand_as(state.z_L)
         mask = reset_flag.view(-1, 1, 1)
+
         return HRMState(
             z_H=torch.where(mask, init_H, state.z_H),
             z_L=torch.where(mask, init_L, state.z_L),
@@ -323,14 +329,16 @@ class HRModel(nn.Module):
 
     def run_high_cycles(self, x: Tensor, state: HRMState, n_cycles: Optional[int] = None) -> Tensor:
         """Iterate high-level cycles, interleaving low-level updates."""
-        for _ in range(n_cycles or self.config.reasoning_h.cycles):
+        cycles = self.config.reasoning_h.cycles if n_cycles is None else n_cycles
+        for _ in range(cycles):
             state.z_L = self.run_low_cycles(x, state)
             state.z_H = self.high_level(state.z_H, state.z_L)
         return state.z_H
 
     def run_low_cycles(self, x: Tensor, state: HRMState, n_cycles: Optional[int] = None) -> Tensor:
         """Iterate low-level cycles (conditioned on high-level state and inputs)."""
-        for _ in range(n_cycles or self.config.reasoning_l.cycles):
+        cycles = self.config.reasoning_l.cycles if n_cycles is None else n_cycles
+        for _ in range(cycles):
             state.z_L = self.low_level(state.z_L, state.z_H + x)
         return state.z_L
 
@@ -351,8 +359,8 @@ class HRModel(nn.Module):
             raise ValueError(f"Expected inputs with shape [batch, seq_length], got {tuple(input.shape)}")
 
         seq_length = input.shape[1]
-        if seq_length > self.config.seq_length:
-            raise ValueError(f"Input seq_length ({seq_length}) exceeds configured seq_length ({self.config.seq_length}).")
+        if seq_length != self.config.seq_length:
+            raise ValueError(f"Input must match configured seq_length ({self.config.seq_length}); got {seq_length}.")
 
         token_embeddings = self.embed_tokens(input.to(torch.int32))
         positions = torch.arange(seq_length, device=input.device)

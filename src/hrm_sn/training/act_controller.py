@@ -11,9 +11,9 @@ from torch import Tensor
 class ACTNetwork(Protocol):
     training: bool
 
-    def empty_carry(self, batch_size: int) -> Any: ...
+    def init_state(self, batch_size: int) -> Any: ...
 
-    def reset_carry(self, reset_flag: Tensor, carry: Any) -> Any: ...
+    def reset_state(self, reset_flag: Tensor, carry: Any) -> Any: ...
 
     def forward_act(self, carry: Any, batch: Dict[str, Tensor]) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]: ...
 
@@ -21,17 +21,8 @@ class ACTNetwork(Protocol):
 
 
 class ACTControllerConfig(BaseModel, extra="forbid"):
-    halt_max_steps: int = Field(
-        ...,
-        ge=1,
-        description="Maximum number of ACT steps.",
-    )
-    halt_exploration_prob: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="Exploration probability for ACT halting.",
-    )
+    halt_exploration_prob: float = Field(..., ge=0.0, le=1.0, description="Exploration probability for ACT halting.")
+    halt_max_steps: int = Field(..., ge=1, description="Maximum number of ACT steps.")
 
 
 @dataclass
@@ -60,14 +51,14 @@ class ACTController:
     def initial_carry(self, batch: Dict[str, Tensor]) -> ACTControllerCarry:
         batch_size = batch["inputs"].shape[0]
         return ACTControllerCarry(
-            inner_carry=self.model.empty_carry(batch_size),
+            inner_carry=self.model.init_state(batch_size),
             steps=torch.zeros((batch_size,), dtype=torch.int32),
             halted=torch.ones((batch_size,), dtype=torch.bool),
             current_data={k: torch.empty_like(v) for k, v in batch.items()},
         )
 
     def step(self, carry: ACTControllerCarry, batch: Dict[str, Tensor], *, training: bool) -> Tuple[ACTControllerCarry, Dict[str, Tensor]]:
-        new_inner_carry = self.model.reset_carry(carry.halted, carry.inner_carry)
+        new_inner_carry = self.model.reset_state(carry.halted, carry.inner_carry)
         new_steps = torch.where(carry.halted, 0, carry.steps)
 
         new_current_data = {

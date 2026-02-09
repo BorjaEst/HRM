@@ -14,7 +14,7 @@ from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, Puz
 from hrm_sn.loss import LossConfig
 from hrm_sn.loss.act_head import ACTLossHead
 from hrm_sn.modules.hrm import HRMConfig, HRModel
-from hrm_sn.training.act_controller import ACTController
+from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
@@ -31,7 +31,11 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
     # Model architecture and data
     architecture: HRMConfig = Field(
         ...,
-        description="Architecture config composed of `network` and `act` settings used by the HRM network and ACT controller.",
+        description="Architecture config for the HRM model. The keys in `architecture` are passed to the HRModel constructor.",
+    )
+    act_controller: ACTControllerConfig = Field(
+        ...,
+        description="Configuration for the ACT controller, which manages halting and partial resets during training. The keys in `act_controller` are passed to the ACTController constructor.",
     )
     dataset: PuzzleDatasetSettings = Field(
         default_factory=PuzzleDatasetSettings,
