@@ -266,89 +266,85 @@ class HRModel(nn.Module):
             self.halt_q_head.bias.fill_(-5)  # type: ignore
 
     def empty_carry(self, batch_size: int) -> HRMState:
-        """Allocate an uninitialized carry state with the right shape/dtype/device."""
+        """Allocate an uninitialized state state with the right shape/dtype/device."""
         config = self.config
         return HRMState(
             z_H=self.high_init.new_empty(batch_size, config.seq_len, config.hidden_size),
             z_L=self.low_init.new_empty(batch_size, config.seq_len, config.hidden_size),
         )
 
-    def reset_carry(self, reset_flag: Tensor, carry: HRMState) -> HRMState:
-        """Reset selected batch elements of the carry to learned initial states.
+    def reset_carry(self, reset_flag: Tensor, state: HRMState) -> HRMState:
+        """Reset selected batch elements of the state to learned initial states.
 
         Args:
             reset_flag: Boolean-ish tensor of shape ``[batch]`` (or broadcastable
                 to it). True entries reset the corresponding state sequences.
-            carry: Current carry.
+            state: Current state.
         """
-        init_H = self.high_init.view(1, 1, -1).expand_as(carry.z_H)
-        init_L = self.low_init.view(1, 1, -1).expand_as(carry.z_L)
+        init_H = self.high_init.view(1, 1, -1).expand_as(state.z_H)
+        init_L = self.low_init.view(1, 1, -1).expand_as(state.z_L)
         mask = reset_flag.view(-1, 1, 1)
         return HRMState(
-            z_H=torch.where(mask, init_H, carry.z_H),
-            z_L=torch.where(mask, init_L, carry.z_L),
+            z_H=torch.where(mask, init_H, state.z_H),
+            z_L=torch.where(mask, init_L, state.z_L),
         )
 
-    def forward_act(self, carry: HRMState, batch: Dict[str, Tensor]) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
+    def forward_act(self, state: HRMState, batch: Dict[str, Tensor]) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
         """Convenience wrapper for ACT-style training loops.
 
         Expects ``batch`` to contain ``"inputs"`` with shape ``[batch, seq_len]``.
         """
-        return self(batch["inputs"], carry=carry)
+        return self(batch["inputs"], state=state)
 
-    def forward(self, input_ids: Tensor, carry: Optional[HRMState] = None) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
+    def forward(self, input_ids: Tensor, state: Optional[HRMState] = None) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
         """Run a forward pass.
 
         Args:
             input_ids: Token ids with shape ``[batch, seq_len]``.
-            carry: Optional previous :class:`HRMState`. If omitted, an empty
-                carry is allocated.
+            state: Optional previous :class:`HRMState`. If omitted, an empty
+                state is allocated.
 
         Returns:
             ``(new_carry, lm_logits, (halt_q0, halt_q1))`` where:
-            - ``new_carry`` contains detached states to carry to the next step.
+            - ``new_carry`` contains detached states to state to the next step.
             - ``lm_logits`` has shape ``[batch, seq_len, vocab_size]``.
             - Halt Q logits are per-example (computed from position 0).
         """
-        carry = carry or self.empty_carry(batch_size=input_ids.shape[0])
-        input_embeddings = self.embed_inputs(input_ids)
+        state = state or self.empty_carry(batch_size=input_ids.shape[0])
+        x = self.embed_inputs(input_ids)
 
         # Forward iterations without grad for memory efficiency.
         # The final update at each level is executed with gradients below.
         with torch.no_grad():
-            z_H, z_L = carry.z_H, carry.z_L
-
-            z_L = self.run_low_cycles(z_L, z_H, input_embeddings)
-            z_H = self.run_high_cycles(z_H, z_L, input_embeddings, n_cycles=self.config.H_cycles - 1)
-            z_L = self.run_low_cycles(z_L, z_H, input_embeddings, n_cycles=self.config.L_cycles - 1)
+            self.run_low_cycles(x, state)
+            self.run_high_cycles(x, state, n_cycles=self.config.H_cycles - 1)
+            self.run_low_cycles(x, state, n_cycles=self.config.L_cycles - 1)
 
         # One-step grad: provide a training signal while keeping memory bounded.
-        z_L = self.low_level(z_L, z_H + input_embeddings)
-        z_H = self.high_level(z_H, z_L)
+        z_L = self.low_level(state.z_L, state.z_H + x)
+        z_H = self.high_level(state.z_H, state.z_L)
 
         # Carry is detached so the next step does not backprop through time.
         new_carry = HRMState(z_H=z_H.detach(), z_L=z_L.detach())
-
         # Language-modeling head predicts a token distribution at each position.
         output = self.lm_head(z_H)
-
         # Halt Q head is computed from a single "summary" token (position 0).
         halt_q_logits = self.halt_q_head(z_H[:, 0]).to(torch.float32)
 
         return new_carry, output, (halt_q_logits[..., 0], halt_q_logits[..., 1])
 
-    def run_high_cycles(self, z_H: Tensor, z_L: Tensor, x: Tensor, n_cycles: Optional[int] = None) -> Tensor:
+    def run_high_cycles(self, x: Tensor, state: HRMState, n_cycles: Optional[int] = None) -> Tensor:
         """Iterate high-level cycles, interleaving low-level updates."""
         for _ in range(n_cycles or self.config.H_cycles):
-            z_H = self.high_level(z_H, z_L)
-            z_L = self.run_low_cycles(z_L, z_H, x)
-        return z_H
+            state.z_H = self.high_level(state.z_H, state.z_L)
+            state.z_L = self.run_low_cycles(x, state)
+        return state.z_H
 
-    def run_low_cycles(self, z_L: Tensor, z_H: Tensor, x: Tensor, n_cycles: Optional[int] = None) -> Tensor:
+    def run_low_cycles(self, x: Tensor, state: HRMState, n_cycles: Optional[int] = None) -> Tensor:
         """Iterate low-level cycles (conditioned on high-level state and inputs)."""
         for _ in range(n_cycles or self.config.L_cycles):
-            z_L = self.low_level(z_L, z_H + x)
-        return z_L
+            state.z_L = self.low_level(state.z_L, state.z_H + x)
+        return state.z_L
 
     def embed_inputs(self, input: Tensor) -> Tensor:
         """Embed token ids and add positional embeddings.
