@@ -63,19 +63,19 @@ class ACTNetwork(Protocol):
     """
 
     def init_state(  # ----------------------------------------------------------------------------
-            self, batch_size: int
-        ) -> Any:  # fmt: skip
-        ... 
+        self, batch_size: int
+    ) -> Any:  # fmt: skip
+        ...  # fmt: skip
 
     def reset_state(  # ---------------------------------------------------------------------------
-            self, reset_flag: Tensor, state: Any
-        ) -> Any:  # fmt: skip
-        ...
+        self, reset_flag: Tensor, state: Any
+    ) -> Any:   # fmt: skip
+        ...  # fmt: skip
 
     def __call__(  # ------------------------------------------------------------------------------
-            self, inputs: Tensor, state: Any | None = None
-        ) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]:  # fmt: skip
-        ...
+        self, inputs: Tensor, state: Any | None = None
+    ) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]:  # fmt: skip
+        ...  # fmt: skip
 
 
 # =================================================================================================
@@ -111,6 +111,16 @@ class ACTOutput:
     action: Tensor  # Selected greedy action: 0=halt, 1=continue
     target_continue: Tensor | None = None  # TD(0) bootstrap target for continue head
 
+    def detach(self) -> ACTOutput:
+        """Return a new ACTOutput with all tensors detached from the computation graph."""
+        return ACTOutput(
+            logits=self.logits.detach(),
+            halt_logits=self.halt_logits.detach(),
+            continue_logits=self.continue_logits.detach(),
+            action=self.action.detach(),
+            target_continue=self.target_continue.detach() if self.target_continue is not None else None,
+        )
+
 
 # =================================================================================================
 class ACTController:
@@ -134,8 +144,8 @@ class ACTController:
     CONTINUE_ACTION = 1
 
     def __init__(  # ------------------------------------------------------------------------------
-            self, model: ACTNetwork, config: ACTControllerConfig
-        ) -> None:  # fmt: skip
+        self, model: ACTNetwork, config: ACTControllerConfig
+    ) -> None:  # fmt: skip
         """Initialize the ACT controller.
 
         Args:
@@ -155,8 +165,8 @@ class ACTController:
         return self._config
 
     def initial_state(  # -------------------------------------------------------------------------
-            self, batch: Dict[str, Tensor]
-        ) -> ACTState:  # fmt: skip
+        self, batch: Dict[str, Tensor]
+    ) -> ACTState:  # fmt: skip
         """Create an initial :class:`ACTState` for a new loop.
 
         The initial ``halted=True`` for all slots forces the first call to
@@ -172,13 +182,11 @@ class ACTController:
         )
 
     def step(  # ----------------------------------------------------------------------------------
-            self, state: ACTState, batch: Dict[str, Tensor], 
-            *, 
-            allow_halt: bool, explore: bool, compute_targets: bool = False,
-        ) -> Tuple[ACTState, ACTOutput]:  # fmt: skip
-        """Run one ACT step.
-
-        This performs, in order:
+        self, state: ACTState, batch: Dict[str, Tensor], 
+        *, 
+        allow_halt: bool, explore: bool, compute_targets: bool = False,
+    ) -> Tuple[ACTState, ACTOutput]:  # fmt: skip
+        """Run one ACT step, this performs, in order:
 
         1) Refreshes per-slot data for slots marked done.
         2) Resets recurrent state for those slots.
@@ -198,7 +206,7 @@ class ACTController:
         config = self.config  # convenience alias
 
         data = self.refresh_slot_data(batch, state)
-        model_state = self.reset_where_done(state)
+        model_state = self.model.reset_state(state.halted, state.model_state)
         model_state, logits, (q_halt, q_continue) = self.model(data["inputs"], model_state)
 
         # Reset the step counter when a slot starts a fresh episode.
@@ -215,8 +223,8 @@ class ACTController:
         return state, output
 
     def refresh_slot_data(  # ---------------------------------------------------------------------
-            self, batch: Dict[str, Tensor], state: ACTState
-        ) -> Dict[str, Tensor]:  # fmt: skip
+        self, batch: Dict[str, Tensor], state: ACTState
+    ) -> Dict[str, Tensor]:  # fmt: skip
         """Replace finished slots with new batch data (episode reset).
 
         Args:
@@ -231,25 +239,11 @@ class ACTController:
         data, halted = state.data, state.halted
         return {k: torch.where(halted.view((-1,) + (1,) * (batch[k].ndim - 1)), batch[k], data[k]) for k in batch}
 
-    def reset_where_done(  # ----------------------------------------------------------------------
-            self, state: ACTState
-        ) -> Any:  # fmt: skip
-        """Reset recurrent state for done slots (episode reset).
-
-        Args:
-            state: Current ACT state with done/halted flags.
-
-        Returns:
-            New recurrent state with slots marked ``halted=True`` reset.
-        """
-        model_state, halted = state.model_state, state.halted
-        return self.model.reset_state(halted, model_state)
-
     def _select_action_and_done(  # ---------------------------------------------------------------
-            self, q_halt: Tensor, q_continue: Tensor, steps: Tensor, 
-            *, 
-            allow_halt: bool, explore: bool
-        ) -> Tuple[Tensor, Tensor, Tensor]:  # fmt: skip
+        self, q_halt: Tensor, q_continue: Tensor, steps: Tensor, 
+        *, 
+        allow_halt: bool, explore: bool
+    ) -> Tuple[Tensor, Tensor, Tensor]:  # fmt: skip
         """Select halt/continue action and compute done mask.
 
         Action selection is greedy from the two Q-logit heads.
@@ -280,8 +274,8 @@ class ACTController:
         return action, done, is_last_step
 
     def td_target_continue(  # --------------------------------------------------------------------
-            self, batch: Dict[str, Tensor], state: ACTState, is_last_step: Tensor
-        ) -> Tensor:  # fmt: skip
+        self, batch: Dict[str, Tensor], state: ACTState, is_last_step: Tensor
+    ) -> Tensor:  # fmt: skip
         """Compute TD(0) target for the continue head.
 
         The continue head is trained to predict a bootstrapped value computed
