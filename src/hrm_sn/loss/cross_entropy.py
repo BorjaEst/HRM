@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Literal, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -6,17 +6,15 @@ from torch import nn
 
 from hrm_sn.activations.stablemax import log_stablemax
 
+LossType = Literal["stablemax_cross_entropy", "softmax_cross_entropy"]
+
 
 def stablemax_cross_entropy(logits, labels, ignore_index: int = -100):
-    logprobs = log_stablemax(logits.to(torch.float64), dim=-1)
-
     valid_mask = labels != ignore_index
     transformed_labels = torch.where(valid_mask, labels, 0)
-    prediction_logprobs = torch.gather(
-        logprobs, index=transformed_labels.to(torch.long).unsqueeze(-1), dim=-1
-    ).squeeze(-1)
-
-    return -torch.where(valid_mask, prediction_logprobs, 0)
+    logprobs = log_stablemax(logits.to(torch.float64), dim=-1)
+    prediction = torch.gather(logprobs, index=transformed_labels.to(torch.long).unsqueeze(-1), dim=-1).squeeze(-1)
+    return -torch.where(valid_mask, prediction, 0)
 
 
 def softmax_cross_entropy(logits, labels, ignore_index: int = -100):
