@@ -11,8 +11,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
 from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
-from hrm_sn.loss import LossConfig
-from hrm_sn.loss.act_head import ACTLossHead
+from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.modules.hrm import HRMConfig, HRModel
 from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
@@ -41,7 +40,7 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
         default_factory=PuzzleDatasetSettings,
         description="Configuration for the PuzzleDataset. This includes parameters like dataset path, batch size, random seed, etc.",
     )
-    loss: LossConfig = Field(
+    loss: ACTLossConfig = Field(
         ...,
         description="Loss config. The keys in `loss` are passed to the loss head constructor.",
     )
@@ -85,9 +84,9 @@ class ModelState:
 class Model(L.LightningModule):
     def __init__(self, config: ModelConfig_HRM_V1):
         super().__init__()
-        self.model = HRModel(config.arch.network)
-        self.controller = ACTController(self.model, config.arch.act)
-        self.loss_head = ACTLossHead(self.controller, config.loss.name)
+        self.model = HRModel(config.architecture)
+        self.controller = ACTController(self.model, config.act_controller)
+        self.loss_head = ACTLossHead(self.controller, config.loss)
         self._config = config
 
         # one backward, step two opts (legacy parity)

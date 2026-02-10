@@ -37,7 +37,6 @@ halt_max_steps = 10
 
 # Loss 
 [loss]
-name = "ACTLossHead"
 function = "stablemax_cross_entropy"
 
 # Random seed for reproducibility
