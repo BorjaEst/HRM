@@ -184,7 +184,7 @@ class ACTController:
     def step(  # ----------------------------------------------------------------------------------
         self, state: ACTState, batch: Dict[str, Tensor], 
         *, 
-        allow_halt: bool, explore: bool, compute_targets: bool = False,
+        allow_halt: bool, explore: bool, compute_targets: bool,
     ) -> Tuple[ACTState, ACTOutput]:  # fmt: skip
         """Run one ACT step, this performs, in order:
 
