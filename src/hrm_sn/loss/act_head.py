@@ -164,7 +164,7 @@ class ACTLossHead(nn.Module):
     ) -> HaltedAgg:  # fmt: skip
         """Build aggregated metrics for halted sequences."""
         if q_continue_correct is None:
-            q_continue_correct = halted_weights.new_zeros(())
+            q_continue_correct = torch.zeros_like(halted_mask)  # (B,) bool
 
         return HaltedAgg(
             halted_count=halted_weights.sum(),
