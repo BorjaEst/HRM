@@ -30,6 +30,7 @@ from hrm_sn.modules.projections import CastedLinear as Linear
 from hrm_sn.utils import trunc_normal_init_
 
 
+# =================================================================================================
 class TransformerBlockConfig(BaseModel, extra="forbid"):
     """Configuration for a single Transformer-style block.
 
@@ -63,6 +64,7 @@ class TransformerBlockConfig(BaseModel, extra="forbid"):
     rms_norm_eps: float = Field(default=1e-5, description="Epsilon value for RMS normalization layers.")
 
 
+# =================================================================================================
 class TransformerBlock(nn.Module):
     """A minimal Transformer block with RMSNorm residuals.
 
@@ -77,7 +79,9 @@ class TransformerBlock(nn.Module):
         - RMSNorm is applied *after* the residual add ("post-norm" style).
     """
 
-    def __init__(self, config: TransformerBlockConfig) -> None:
+    def __init__(  # ------------------------------------------------------------------------------
+        self, config: TransformerBlockConfig
+    ) -> None:  # fmt: skip
         super().__init__()
         self._config = config
 
@@ -89,13 +93,16 @@ class TransformerBlock(nn.Module):
     def config(self) -> TransformerBlockConfig:
         return self._config
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(  # -------------------------------------------------------------------------------
+        self, x: Tensor
+    ) -> Tensor:  # fmt: skip
         attention = self.self_attn(x)
         x = rms_norm(x + attention, variance_epsilon=self.norm_eps)
         x = rms_norm(x + self.mlp(x), variance_epsilon=self.norm_eps)
         return x
 
 
+# =================================================================================================
 class ReasoningModule(nn.Module):
     """A stack of :class:`TransformerBlock` layers with additive input injection.
 
@@ -108,7 +115,9 @@ class ReasoningModule(nn.Module):
         - ``input_injection``: broadcastable to ``x`` (typically the same shape).
     """
 
-    def __init__(self, layers: List[TransformerBlockConfig]):
+    def __init__(  # ------------------------------------------------------------------------------
+        self, layers: List[TransformerBlockConfig]
+    ) -> None:  # fmt: skip
         super().__init__()
 
         modules = [TransformerBlock(config) for config in layers]
@@ -121,11 +130,13 @@ class ReasoningModule(nn.Module):
         return x
 
 
+# =================================================================================================
 class ReasoningConfig(BaseModel, extra="forbid"):
     layers: int = Field(default=4, ge=1, description="Number of layers in each reasoning module (high-level and low-level).")
     cycles: int = Field(default=2, ge=1, description="Number of cycles to alternate between high-level and low-level reasoning modules.")
 
 
+# =================================================================================================
 class HRMConfig(BaseModel, extra="forbid"):
     """Configuration for :class:`HRModel`.
 
@@ -175,6 +186,7 @@ class HRMConfig(BaseModel, extra="forbid"):
         return [self.transformer_block for _ in range(self.reasoning_l.layers)]
 
 
+# =================================================================================================
 @dataclass
 class HRMState:
     """Recurrent state carried between forward passes.
@@ -192,6 +204,7 @@ class HRMState:
     z_L: Tensor  # Lower-level state tensor of shape [batch, seq_length, hidden_size].
 
 
+# =================================================================================================
 class HRModel(nn.Module):
     """Hierarchical Reasoning Model (HRM).
 
@@ -206,7 +219,9 @@ class HRModel(nn.Module):
         compute, memory, and training signal.
     """
 
-    def __init__(self, config: HRMConfig) -> None:
+    def __init__(  # ------------------------------------------------------------------------------
+        self, config: HRMConfig
+    ) -> None:  # fmt: skip
         super().__init__()
         self._config = config
 
@@ -232,7 +247,9 @@ class HRModel(nn.Module):
         """Convenience property to access the model configuration."""
         return self._config
 
-    def reset_parameters(self) -> None:
+    def reset_parameters(  # ----------------------------------------------------------------------
+        self,
+    ) -> None:  # fmt: skip
         """Initialize parameters and buffers.
 
         Only model-owned buffers/heads are initialized here. Submodules (e.g.
@@ -246,7 +263,9 @@ class HRModel(nn.Module):
             self.halt_q_head.weight.zero_()
             self.halt_q_head.bias.fill_(-5)  # type: ignore
 
-    def init_state(self, batch_size: int) -> HRMState:
+    def init_state(  # ----------------------------------------------------------------------------
+        self, batch_size: int,
+    ) -> HRMState:  # fmt: skip
         """Allocate a new state tensor with the right shape/dtype/device.
 
         The returned state is initialized via :meth:`reset_state` using the
@@ -261,7 +280,9 @@ class HRModel(nn.Module):
         reset_flag = torch.ones(batch_size, dtype=torch.bool, device=new_state.z_H.device)
         return self.reset_state(reset_flag, state=new_state)
 
-    def reset_state(self, reset_flag: Tensor, state: HRMState) -> HRMState:
+    def reset_state(  # ---------------------------------------------------------------------------
+        self, reset_flag: Tensor, state: HRMState,
+    ) -> HRMState:  # fmt: skip
         """Reset selected batch elements of the state to initial states.
 
         Args:
@@ -283,7 +304,10 @@ class HRModel(nn.Module):
             z_L=torch.where(mask, init_L, state.z_L),
         )
 
-    def forward(self, inputs: Tensor, state: Optional[HRMState] = None) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:
+    def forward(  # -------------------------------------------------------------------------------
+        self, inputs: Tensor, 
+        state: Optional[HRMState] = None,
+    ) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:  # fmt: skip
         """Run a forward pass.
 
         Args:
@@ -320,7 +344,10 @@ class HRModel(nn.Module):
 
         return new_state, output, (halt_q_logits[..., 0], halt_q_logits[..., 1])
 
-    def run_high_cycles(self, x: Tensor, state: HRMState, n_cycles: Optional[int] = None) -> Tensor:
+    def run_high_cycles(  # -----------------------------------------------------------------------
+        self, x: Tensor, state: HRMState,
+        n_cycles: Optional[int] = None,
+    ) -> Tensor:  # fmt: skip
         """Iterate high-level cycles, interleaving low-level updates."""
         cycles = self.config.reasoning_h.cycles if n_cycles is None else n_cycles
         for _ in range(cycles):
@@ -328,14 +355,19 @@ class HRModel(nn.Module):
             state.z_H = self.high_level(state.z_H, state.z_L)
         return state.z_H
 
-    def run_low_cycles(self, x: Tensor, state: HRMState, n_cycles: Optional[int] = None) -> Tensor:
+    def run_low_cycles(  # ------------------------------------------------------------------------
+        self, x: Tensor, state: HRMState,
+        n_cycles: Optional[int] = None,
+    ) -> Tensor:  # fmt: skip
         """Iterate low-level cycles (conditioned on high-level state and inputs)."""
         cycles = self.config.reasoning_l.cycles if n_cycles is None else n_cycles
         for _ in range(cycles):
             state.z_L = self.low_level(state.z_L, state.z_H + x)
         return state.z_L
 
-    def embed_inputs(self, input: Tensor) -> Tensor:
+    def embed_inputs(  # --------------------------------------------------------------------------
+        self, input: Tensor,
+    ) -> Tensor:  # fmt: skip
         """Embed token ids and add positional embeddings.
 
         Args:
