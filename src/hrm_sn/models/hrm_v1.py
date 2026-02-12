@@ -162,10 +162,10 @@ class Model(L.LightningModule):
         )
 
         # Horizon=1 matches legacy behavior: exactly one ACT step per mini-batch.
-        step_batch = repeat(step_batch, times=1)
+        step_batches = repeat(step_batch, 1)
 
         step = None
-        for step in RolloutLoop(self.loss_head, step_batch, carry0=self._train_carry):
+        for step in RolloutLoop(self.loss_head, step_batches, carry0=self._train_carry):
             pass  # TODO: Sum loss across steps if horizon > 1
         if step is None:
             raise ValueError("RolloutLoop did not yield any steps, cannot proceed with training step.")
@@ -199,11 +199,11 @@ class Model(L.LightningModule):
         set_name, batch_dict, global_effective_bs = batch
 
         # Horizon=1 matches legacy behavior: exactly one ACT step per mini-batch.
-        step_batch = repeat(batch_dict, times=1)
+        step_batches = repeat(batch_dict, 1)
 
         # Initialize carry/state on the first batch
         step = None
-        for step in EvaluationLoop(self.loss_head, step_batch):
+        for step in EvaluationLoop(self.loss_head, step_batches):
             pass  # TODO: Sum loss across steps?
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")

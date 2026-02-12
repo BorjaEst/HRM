@@ -178,8 +178,8 @@ class ACTController:
         batch_size, device = batch_sample["inputs"].shape[0], batch_sample["inputs"].device
         return ACTState(  # FIXME: We need to replace batch_dict by observations and labels
             model_state=self.model.init_state(batch_size),
-            steps=torch.zeros((batch_size,), dtype=torch.int32),
-            halted=torch.ones((batch_size,), dtype=torch.bool),
+            steps=torch.zeros((batch_size,), dtype=torch.int32, device=device),
+            halted=torch.ones((batch_size,), dtype=torch.bool, device=device),
             data={k: torch.empty_like(v) for k, v in batch_sample.items()},
         )
 
