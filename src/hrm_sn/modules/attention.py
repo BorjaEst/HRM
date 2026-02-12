@@ -79,8 +79,9 @@ class AttentionConfig(BaseModel, extra="forbid"):
         return v
 
     @field_validator("num_kv_heads", mode="before")
-    def _set_num_kv_heads(cls, v, values):
-        return v if v is not None else values.get("num_heads")
+    @classmethod
+    def _set_num_kv_heads(cls, v, info: ValidationInfo):
+        return v if v is not None else info.data.get("num_heads")
 
     is_causal: bool = Field(default=False, description="Apply causal masking in attention.")
 
