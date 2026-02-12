@@ -33,9 +33,11 @@ from hrm_sn.loss.cross_entropy import LossType
 from hrm_sn.metrics import HaltedAgg, LossAgg, StepMetrics, TokenAgg
 from hrm_sn.training.act_controller import ACTController, ACTOutput, ACTState
 
+Batch = Dict[str, Tensor]  # Generic batch type, can be specialized as needed
 IGNORE_LABEL_ID = -100
 
 
+# =================================================================================================
 class ACTLossConfig(BaseModel, extra="forbid"):
     """Configuration for :class:`ACTLossHead`.
 
@@ -52,6 +54,7 @@ class ACTLossConfig(BaseModel, extra="forbid"):
     )
 
 
+# =================================================================================================
 @dataclass(frozen=True)
 class CorrectnessStats:
     """Derived correctness signals used for halting supervision and metrics.
@@ -84,6 +87,7 @@ class CorrectnessStats:
         return self.is_correct.sum(-1) == self.loss_counts
 
 
+# =================================================================================================
 @dataclass(frozen=True)
 class Losses:
     """Structured loss components produced by :class:`ACTLossHead`.
@@ -98,7 +102,7 @@ class Losses:
 
     @property
     def total(self) -> Tensor:
-        """Total scalar loss used for backprop.
+        """Total scalar loss used for back-propagation.
 
         The halting and continuation losses are down-weighted (0.5 each) relative
         to the modeling loss.
@@ -109,14 +113,17 @@ class Losses:
         return self.loss_sum + 0.5 * (self.q_halt_loss_sum + q_continue_loss_sum)
 
 
+# =================================================================================================
 @dataclass(frozen=True)
-class StepResult:
+class ACTStepOutput:
     """Per-step output contract for loss heads and rollout loops."""
 
-    loss: Tensor
-    carry: ACTState
-    metrics: StepMetrics
-    outputs: Optional[ACTOutput] = None
+    loss: Tensor  # Scalar loss for this step, used for back-propagation
+    carry: ACTState  # Updated carry/state after this step, used for the next step's input
+    metrics: StepMetrics  # Aggregated metrics for this step, used for logging
+
+    t: Optional[int] = None  # Step index (optional, may be set by the rollout loop)
+    outputs: Optional[ACTOutput] = None  # Raw controller outputs
 
     @property
     def all_finished(self) -> Tensor:
@@ -170,14 +177,14 @@ class ACTLossHead(nn.Module):
         return getattr(cross_entropy_module, self._config.function)
 
     def initial_carry(  # -------------------------------------------------------------------------
-        self, *args, **kwargs
+        self, batch_sample: Batch
     ) -> ACTState:  # fmt: skip
         """Create the initial :class:`ACTState` for a new rollout."""
-        return self.controller.initial_state(*args, **kwargs)
+        return self.controller.initial_state(batch_sample)
 
     def forward(  # -------------------------------------------------------------------------------
-        self, batch: Dict[str, Tensor], carry: ACTState,
-    ) -> StepResult:  # fmt: skip
+        self, batch: Batch, carry: ACTState, t: Optional[int]=None
+    ) -> ACTStepOutput:  # fmt: skip
         """Run one ACT step, returning the step loss, updated state, and metrics.
 
         Training vs eval behavior:
@@ -201,7 +208,7 @@ class ACTLossHead(nn.Module):
         losses = self.compute_losses(outputs, labels, stats)
         metrics = self.compute_metrics(carry, outputs, stats, losses)
 
-        return StepResult(loss=losses.total, carry=carry, metrics=metrics, outputs=outputs)
+        return ACTStepOutput(loss=losses.total, carry=carry, metrics=metrics, t=t, outputs=outputs)
 
     def compute_correctness(  # ------------------------------------------------------------------
         self, outputs: ACTOutput, labels: Tensor

@@ -1,5 +1,7 @@
+import itertools
 import math
 from dataclasses import dataclass
+from itertools import repeat
 from typing import Any, Dict, List, Literal, Optional, Tuple, TypeAlias
 
 import lightning as L
@@ -10,11 +12,13 @@ from torch import Tensor
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
+from hrm_sn import metrics
 from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.modules.hrm import HRMConfig, HRModel
 from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
+from hrm_sn.training.collector import PartialResetCollector
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
 from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
@@ -158,15 +162,17 @@ class Model(L.LightningModule):
         )
 
         # Horizon=1 matches legacy behavior: exactly one ACT step per mini-batch.
+        step_batch = repeat(step_batch, times=1)
+
         step = None
-        for step in RolloutLoop(self.loss_head, self._train_carry, step_batch, horizon=1):
+        for step in RolloutLoop(self.loss_head, step_batch, carry0=self._train_carry):
             pass  # TODO: Sum loss across steps if horizon > 1
         if step is None:
             raise ValueError("RolloutLoop did not yield any steps, cannot proceed with training step.")
         self._train_carry = step.carry
 
         # scaling: (1/global_batch_size) * loss, then backward TODO: use torch's built-in support for scaling
-        loss = step.loss_sum / float(global_effective_bs)
+        loss = step.loss / float(global_effective_bs)
         self.manual_backward(loss)
 
         opt_main, opt_emb = self.optimizers()  # type: ignore
@@ -178,27 +184,36 @@ class Model(L.LightningModule):
         sch_emb.step()  # type: ignore
 
         # log: ACTLossHead metrics are sums; normalize like legacy
-        count = step.metrics["count"].clamp_min(1)
+        log_metrics = metrics.to_log_dict(step.metrics, prefix="train/", global_batch_size=global_effective_bs)
         self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=False)
-        self.log("train/accuracy", step.metrics["accuracy"] / count, on_step=True, prog_bar=True)
-        self.log("train/exact_accuracy", step.metrics["exact_accuracy"] / count, on_step=True)
-        self.log("train/steps", step.metrics["steps"] / count, on_step=True)
+        self.log("train/accuracy", log_metrics["train/accuracy"], on_step=True, prog_bar=True)
+        self.log("train/exact_accuracy", log_metrics["train/exact_accuracy"], on_step=True)
+        self.log("train/steps", log_metrics["train/steps"], on_step=True)
+        self.log("train/lm_loss", log_metrics["train/lm_loss"], on_step=True)
+        self.log("train/q_halt_loss", log_metrics["train/q_halt_loss"], on_step=True)
+        self.log("train/q_continue_loss", log_metrics["train/q_continue_loss"], on_step=True)
 
         return loss
 
     def validation_step(self, batch: Batch, batch_idx: int) -> None:
         set_name, batch_dict, global_effective_bs = batch
 
+        # Horizon=1 matches legacy behavior: exactly one ACT step per mini-batch.
+        step_batch = repeat(batch_dict, times=1)
+
         # Initialize carry/state on the first batch
         step = None
-        for step in EvaluationLoop(self.loss_head, batch_dict, return_keys=self.config.eval_save_outputs):
+        for step in EvaluationLoop(self.loss_head, step_batch):
             pass  # TODO: Sum loss across steps?
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
-        count = step.metrics["count"].clamp_min(1)
+        log_metrics = metrics.to_log_dict(step.metrics, prefix=f"{set_name}/", global_batch_size=global_effective_bs)
 
-        self.log(f"{set_name}/accuracy", step.metrics["accuracy"] / count, on_step=False, on_epoch=True)
-        self.log(f"{set_name}/exact_accuracy", step.metrics["exact_accuracy"] / count, on_step=False, on_epoch=True)
+        self.log(f"{set_name}/accuracy", log_metrics[f"{set_name}/accuracy"], on_step=False, on_epoch=True)
+        self.log(f"{set_name}/exact_accuracy", log_metrics[f"{set_name}/exact_accuracy"], on_step=False, on_epoch=True)
+        self.log(f"{set_name}/lm_loss", log_metrics[f"{set_name}/lm_loss"], on_step=False, on_epoch=True)
+        self.log(f"{set_name}/q_halt_loss", log_metrics[f"{set_name}/q_halt_loss"], on_step=False, on_epoch=True)
+        self.log(f"{set_name}/q_continue_loss", log_metrics[f"{set_name}/q_continue_loss"], on_step=False, on_epoch=True)
 
 
 def cosine_lr(step: int, *, base_lr: float, warmup: int, total: int, min_ratio: float) -> float:

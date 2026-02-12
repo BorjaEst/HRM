@@ -1,118 +1,108 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Union
+from itertools import tee
+from typing import Any, Dict, Iterator, Optional
 
-import torch
 from torch import Tensor
 
-from hrm_sn.loss.act_head import ACTLossHead
+from hrm_sn.loss.act_head import ACTLossHead, ACTStepOutput
 
-BatchDict = Dict[str, Tensor]
-BatchProvider = Callable[[int, Any], BatchDict]  # (t, carry) -> batch
-
-
-@dataclass(frozen=True)
-class HRMStep:
-    t: int
-    carry: Any
-    loss_sum: Tensor
-    metrics: Dict[str, Tensor]
-    outputs: Optional[Dict[str, Tensor]]
-    all_finish: bool
+Batch = Dict[str, Tensor]  # Generic batch type, can be specialized as needed
+StepBatchSource = Iterator[Batch]
 
 
-class RolloutLoop(Iterator[HRMStep]):
+# =================================================================================================
+class RolloutLoop(Iterator[ACTStepOutput]):
     """
     Repeatedly calls loss_head(carry=..., batch=..., return_keys=...).
+
+    Batch inputs are provided by a step-batch source (iterator) and may optionally
+    accept carry updates via an ``update(carry=...)`` method.
 
     Stop conditions:
     - t reaches horizon (default 1)  => matches current training behavior
     - optionally stop early if all_finish (useful for eval)
     """
 
-    def __init__(
-        self,
-        loss_head: ACTLossHead,
-        carry0: Any,
-        batch: Union[BatchDict, BatchProvider],
+    def __init__(  # ------------------------------------------------------------------------------
+        self, loss_head: ACTLossHead, batch: StepBatchSource,
         *,
-        return_keys: Sequence[str] = (),
-        horizon: Optional[int] = 1,
-        stop_on_all_finish: bool = False,
-    ) -> None:
+        carry0: Optional[Any]=None, max_steps: Optional[int] = None, stop_on_all_finish: bool = True,
+    ) -> None:  # fmt: skip
         self.loss_head = loss_head
-        self.carry = carry0
-        self.batch = batch
-        self.return_keys = list(return_keys)
-        self.horizon = horizon
-        self.stop_on_all_finish = stop_on_all_finish
+        batch_iter = enumerate(batch)  # Add time step enumeration to the batch source
 
-        self._t = 0
+        # Use tee to peek without consuming
+        peek_iter, self.batch_iter = tee(batch_iter, 2)
+        _, first_batch = next(peek_iter)  # Peek first batch
+
+        # Initialize state and previous action
+        self.carry = carry0 or loss_head.initial_carry(first_batch)
+        self.max_steps = max_steps if max_steps is not None else float("inf")
+        self.stop_on_all_finish = stop_on_all_finish
         self._done = False
 
-    def __iter__(self) -> "RolloutLoop":
+    def __iter__(self) -> RolloutLoop:
         return self
 
-    def __next__(self) -> HRMStep:
-        if self._done:
+    def __next__(self) -> ACTStepOutput:
+        if self._done:  # Check if we've already stopped due to all_finished
             raise StopIteration
 
-        if self.horizon is not None and self._t >= self.horizon:
+        # t_rollout is 0-indexed, so the first batch corresponds to t=0
+        t_rollout, batch = next(self.batch_iter)  # enumerated, returns t in first position
+        output: ACTStepOutput = self.loss_head(batch, self.carry, t=t_rollout)
+        self.carry = output.carry
+
+        # Check stop conditions after updating carry/state
+        if self.stop_on_all_finish and output.all_finished:
             self._done = True
-            raise StopIteration
-
-        batch_dict = self.batch if isinstance(self.batch, dict) else self.batch(self._t, self.carry)
-
-        new_carry, loss_sum, metrics, outputs, all_finish = self.loss_head(
-            carry=self.carry,
-            batch=batch_dict,
-            return_keys=self.return_keys,
-        )
-        self.carry = new_carry
-
-        step = HRMStep(
-            t=self._t,
-            carry=new_carry,
-            loss_sum=loss_sum,
-            metrics=metrics,
-            outputs=outputs,
-            all_finish=bool(all_finish),
-        )
-        self._t += 1
-
-        if self.stop_on_all_finish and step.all_finish:
+        if t_rollout >= self.max_steps - 1:  # t_rollout is 0-indexed
             self._done = True
 
-        return step
+        return output
 
 
-class EvaluationLoop(Iterator[HRMStep]):
+class EvaluationLoop(Iterator[ACTStepOutput]):
     """
-    Convenience: initialize carry from batch, then run until all_finish
-    (optionally capped by max_steps).
+    Convenience: initialize carry from batch, then run until all_finish.
+    TODO: This is currently unused since eval also needs trace collection
     """
 
-    def __init__(
-        self,
-        loss_head: ACTLossHead,
-        batch: BatchDict,
+    def __init__(  # ------------------------------------------------------------------------------
+        self, loss_head: ACTLossHead, batch: StepBatchSource,
         *,
-        return_keys: Sequence[str] = (),
-        max_steps: Optional[int] = None,  # safety cap
-    ) -> None:
-        carry0 = loss_head.initial_carry(batch)
-        self._inner = RolloutLoop(
-            loss_head=loss_head,
-            carry0=carry0,
-            batch=batch,
-            return_keys=return_keys,
-            horizon=max_steps,  # None => uncapped
-            stop_on_all_finish=True,
-        )
+        carry0: Optional[Any]=None, max_steps: Optional[int] = None, stop_on_all_finish: bool = True,
+    ) -> None:  # fmt: skip
+        self.loss_head = loss_head
+        batch_iter = enumerate(batch)  # Add time step enumeration to the batch source
 
-    def __iter__(self) -> "EvaluationLoop":
+        # Use tee to peek without consuming
+        peek_iter, self.batch_iter = tee(batch_iter, 2)
+        _, first_batch = next(peek_iter)  # Peek first batch
+
+        # Initialize state and previous action
+        self.carry = carry0 or loss_head.initial_carry(first_batch)
+        self.max_steps = max_steps if max_steps is not None else float("inf")
+        self.stop_on_all_finish = stop_on_all_finish
+        self._done = False
+
+    def __iter__(self) -> EvaluationLoop:
         return self
 
-    def __next__(self) -> HRMStep:
-        return next(self._inner)
+    def __next__(self) -> ACTStepOutput:
+        if self._done:  # Check if we've already stopped due to all_finished
+            raise StopIteration
+
+        # t_rollout is 0-indexed, so the first batch corresponds to t=0
+        t_rollout, batch = next(self.batch_iter)  # enumerated, returns t in first position
+        output: ACTStepOutput = self.loss_head(batch, self.carry, t=t_rollout)
+        self.carry = output.carry
+
+        # Check stop conditions after updating carry/state
+        if self.stop_on_all_finish and output.all_finished:
+            self._done = True
+        if t_rollout >= self.max_steps - 1:  # t_rollout is 0-indexed
+            self._done = True
+
+        return output

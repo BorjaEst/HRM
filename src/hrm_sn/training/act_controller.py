@@ -31,6 +31,8 @@ import torch
 from pydantic import BaseModel, Field
 from torch import Tensor
 
+Batch = Dict[str, Tensor]  # Generic batch type, can be specialized as needed
+
 
 # ==================================================================================================
 class ACTControllerConfig(BaseModel, extra="forbid"):
@@ -165,7 +167,7 @@ class ACTController:
         return self._config
 
     def initial_state(  # -------------------------------------------------------------------------
-        self, batch: Dict[str, Tensor]
+        self, batch_sample: Batch
     ) -> ACTState:  # fmt: skip
         """Create an initial :class:`ACTState` for a new loop.
 
@@ -173,16 +175,16 @@ class ACTController:
         :meth:`refresh_slot_data` to populate per-slot buffers from ``batch``
         (since buffers start empty).
         """
-        batch_size = batch["inputs"].shape[0]
-        return ACTState(
+        batch_size, device = batch_sample["inputs"].shape[0], batch_sample["inputs"].device
+        return ACTState(  # FIXME: We need to replace batch_dict by observations and labels
             model_state=self.model.init_state(batch_size),
             steps=torch.zeros((batch_size,), dtype=torch.int32),
             halted=torch.ones((batch_size,), dtype=torch.bool),
-            data={k: torch.empty_like(v) for k, v in batch.items()},
+            data={k: torch.empty_like(v) for k, v in batch_sample.items()},
         )
 
     def step(  # ----------------------------------------------------------------------------------
-        self, state: ACTState, batch: Dict[str, Tensor], 
+        self, state: ACTState, batch: Batch, 
         *, 
         allow_halt: bool, explore: bool, compute_targets: bool,
     ) -> Tuple[ACTState, ACTOutput]:  # fmt: skip
@@ -223,7 +225,7 @@ class ACTController:
         return state, output
 
     def refresh_slot_data(  # ---------------------------------------------------------------------
-        self, batch: Dict[str, Tensor], state: ACTState
+        self, batch: Batch, state: ACTState
     ) -> Dict[str, Tensor]:  # fmt: skip
         """Replace finished slots with new batch data (episode reset).
 
@@ -274,7 +276,7 @@ class ACTController:
         return action, done, is_last_step
 
     def td_target_continue(  # --------------------------------------------------------------------
-        self, batch: Dict[str, Tensor], state: ACTState, is_last_step: Tensor
+        self, batch: Batch, state: ACTState, is_last_step: Tensor
     ) -> Tensor:  # fmt: skip
         """Compute TD(0) target for the continue head.
 
