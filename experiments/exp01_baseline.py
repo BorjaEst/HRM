@@ -1,24 +1,25 @@
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import torch
 from lightning.pytorch import Trainer, seed_everything
-from pydantic import BaseSettings, Field
-from pydantic_settings import BaseSettings
+from pydantic import Field
+from pydantic_settings import BaseSettings, CliSettingsSource, PydanticBaseSettingsSource
 
 from hrm_sn.callbacks.checkpoint import CheckpointCallback, CheckpointSettings
 from hrm_sn.callbacks.figures import FiguresCallback, FiguresSettings
 from hrm_sn.data.puzzle_datamodule import PuzzleDatamodule
 from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
 from hrm_sn.logging.tensorboard import Logger, LoggerSettings
-from hrm_sn.loss import LossConfig
-from hrm_sn.loss.act_head import ACTLossHead
+from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.models.hrm_v1 import Model, ModelConfig_HRM_V1
-from hrm_sn.modules.hrm import HierarchicalReasoningModel_ACTV1Config
+from hrm_sn.modules.hrm import HRMConfig
+from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
@@ -27,12 +28,22 @@ from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConf
 
 # Configure PyTorch for better performance on modern GPUs
 torch.set_float32_matmul_precision("medium")
+CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/exp01_baseline.toml")
 
 
 # ============================================================================
 # Settings Model
 # ============================================================================
 class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_name="run"):
+    """ """
+
+    @classmethod
+    def settings_customise_sources(  # ------------------------------------------------------------
+        cls, settings_cls: BaseSettings, init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource, dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource
+    ) -> Tuple[PydanticBaseSettingsSource]:  # fmt: skip
+        return CliSettingsSource(settings_cls), init_settings, env_settings, dotenv_settings, file_secret_settings
 
     # =========================================================================
     # Names and tracking
@@ -49,15 +60,15 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # =========================================================================
     # Model architecture and data
     # =========================================================================
-    arch: HierarchicalReasoningModel_ACTV1Config = Field(
+    architecture: HRMConfig = Field(
         ...,
-        description="Architecture config. The keys in `arch.__pydantic_extra__` are passed to the model constructor.",
+        description="Architecture config for the HRM model. The keys in `architecture` are passed to the HRModel constructor.",
     )
-    dataset: PuzzleDatasetSettings = Field(
-        default_factory=PuzzleDatasetSettings,
-        description="Configuration for the PuzzleDataset. This includes parameters like dataset path, batch size, random seed, etc.",
+    act_controller: ACTControllerConfig = Field(
+        ...,
+        description="Configuration for the ACT controller, which manages halting and partial resets during training. The keys in `act_controller` are passed to the ACTController constructor.",
     )
-    loss: LossConfig = Field(
+    loss: ACTLossConfig = Field(
         ...,
         description="Loss config. The keys in `loss` are passed to the loss head constructor.",
     )
@@ -75,7 +86,11 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     )
 
     # =========================================================================
-    # Hyperparameters
+    # Data settings (passed as configs to DataModule)
+    # =========================================================================
+
+    # =========================================================================
+    # Training control settings (passed as top-level settings for ease of CLI overrides)
     # =========================================================================
     global_batch_size: int = Field(
         ...,
@@ -86,10 +101,6 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # =========================================================================
     # Core settings for model, data, and training configuration (passed as configs to modules)
     # =========================================================================
-    configuration_path: Optional[Path] = Field(
-        default=None,
-        description="Path to a TOML configuration file. Overrides CLI arguments and environment variables.",
-    )
     logger: Optional[LoggerSettings] = Field(
         default_factory=LoggerSettings,
         description="TensorBoard logger settings.",
@@ -148,39 +159,12 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # =========================================================================
     @property
     def model(self) -> ModelConfig_HRM_V1:
-        """Compose TEMConfig from leaf settings.
-        Creates the aggregate model configuration consumed by Model.
-        """
-        if self.configuration_path is None:
-            model_config = ModelConfig_HRM_V1.model_validate(self, from_attributes=True)
-        else:
-            with open(self.configuration_path, "rb") as f:
-                config_dict = tomllib.load(f)
-            model_config = ModelConfig_HRM_V1.model_validate(config_dict, from_attributes=True)
-
-        metadata = self._load_dataset_metadata(model_config.dataset.dataset_path, split="train")
-        arch = model_config.arch.model_copy(
-            update={
-                "seq_len": metadata.seq_len,
-                "vocab_size": metadata.vocab_size,
-            }
-        )
-        return model_config.model_copy(update={"arch": arch})
-
-    @staticmethod
-    def _load_dataset_metadata(dataset_path: str, *, split: str) -> PuzzleDatasetMetadata:
-        metadata_path = Path(dataset_path) / split / "dataset.json"
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"Dataset metadata not found at {metadata_path}. Ensure the dataset is built before training.")
-
-        with metadata_path.open("r", encoding="utf-8") as f:
-            return PuzzleDatasetMetadata.model_validate(json.load(f))
+        """Compose ModelConfig_HRM_V1 from leaf settings."""
+        return ModelConfig_HRM_V1.model_validate(self, from_attributes=True)
 
     @property
     def datamodule(self) -> PuzzleDatamoduleSettings:
-        """Compose DataConfig from leaf settings.
-        Creates the aggregate data configuration consumed by DataModule.
-        """
+        """Compose PuzzleDatamoduleSettings from leaf settings."""
         return PuzzleDatamoduleSettings.model_validate(self, from_attributes=True)
 
 
@@ -194,7 +178,8 @@ if __name__ == "__main__":
     """
 
     # Step _: Parse settings (CLI overrides TOML overrides defaults)
-    settings = ExperimentSettings.load()
+    defaults_from_path = tomllib.load(Path(CONFIGURATION_PATH).open("rb"))
+    settings = RunArguments(**defaults_from_path)
 
     # Step _: Seed everything for reproducibility
     seed_everything(settings.shared.seed, workers=True)
