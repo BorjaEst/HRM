@@ -1,4 +1,3 @@
-import itertools
 import math
 from dataclasses import dataclass
 from itertools import repeat
@@ -10,15 +9,12 @@ from adam_atan2_pytorch import AdamAtan2 as AdamATan2
 from pydantic import BaseModel, Field
 from torch import Tensor
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LRScheduler
 
 from hrm_sn import metrics
-from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.modules.hrm import HRMConfig, HRModel
 from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
-from hrm_sn.training.collector import PartialResetCollector
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
 from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
