@@ -28,7 +28,7 @@ from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConf
 
 # Configure PyTorch for better performance on modern GPUs
 torch.set_float32_matmul_precision("medium")
-CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/exp01_baseline.toml")
+CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/defaults.toml")
 
 
 # ============================================================================
@@ -39,11 +39,11 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
 
     @classmethod
     def settings_customise_sources(  # ------------------------------------------------------------
-        cls, settings_cls: BaseSettings, init_settings: PydanticBaseSettingsSource,
+        cls, settings_cls: type[BaseSettings], init_settings: PydanticBaseSettingsSource,
         env_settings: PydanticBaseSettingsSource, dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource
-    ) -> Tuple[PydanticBaseSettingsSource]:  # fmt: skip
-        return CliSettingsSource(settings_cls), init_settings, env_settings, dotenv_settings, file_secret_settings
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> Tuple[PydanticBaseSettingsSource, ...]:  # fmt: skip
+        return (CliSettingsSource(settings_cls), init_settings, env_settings, dotenv_settings, file_secret_settings)
 
     # =========================================================================
     # Names and tracking
