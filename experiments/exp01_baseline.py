@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, CliSettingsSource, PydanticBaseSetti
 
 from hrm_sn.callbacks.checkpoint import CheckpointCallback, CheckpointSettings
 from hrm_sn.callbacks.figures import FiguresCallback, FiguresSettings
-from hrm_sn.data.puzzle_datamodule import PuzzleDatamodule
+from hrm_sn.data.puzzle_datamodule import PuzzleDatamodule, PuzzleDatamoduleConfig
 from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
 from hrm_sn.logging.tensorboard import Logger, LoggerSettings
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
@@ -163,9 +163,9 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         return ModelConfig_HRM_V1.model_validate(self, from_attributes=True)
 
     @property
-    def datamodule(self) -> PuzzleDatamoduleSettings:
-        """Compose PuzzleDatamoduleSettings from leaf settings."""
-        return PuzzleDatamoduleSettings.model_validate(self, from_attributes=True)
+    def datamodule(self) -> PuzzleDatamoduleConfig:
+        """Compose PuzzleDatamoduleConfig from leaf settings."""
+        return PuzzleDatamoduleConfig.model_validate(self, from_attributes=True)
 
 
 # ============================================================================
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     settings = RunArguments(**defaults_from_path)
 
     # Step _: Seed everything for reproducibility
-    seed_everything(settings.shared.seed, workers=True)
+    seed_everything(settings.datamodule.dataset.seed)
 
     # Step _:
     # Preparation of callbacks list: checkpointing + optional figure generation
@@ -192,21 +192,18 @@ if __name__ == "__main__":
     if settings.figures is not None and settings.figures.enabled:
         callbacks_list.append(FiguresCallback(settings.figures))
 
-    trainer_settings = settings.trainer_settings
-
     # Step _: Build the PyTorch Lightning Trainer
     # This wires together logging, checkpointing, and training control
     trainer = Trainer(
         # TensorBoard logger for metrics and hyperparameters
-        logger=Logger(settings.logger_settings) if settings.logger_settings is not None else None,
+        logger=Logger(settings.logger) if settings.logger is not None else None,
         # Callbacks: checkpointing + optional figure generation
         callbacks=callbacks_list if callbacks_list else None,
         # Lightning Trainer kwargs (extracted from config)
-        max_steps=trainer_settings.max_steps,
-        val_check_interval=trainer_settings.val_check_interval,
-        log_every_n_steps=trainer_settings.log_every_n_steps,
-        enable_progress_bar=trainer_settings.enable_progress_bar,
-        default_root_dir=str(trainer_settings.default_root_dir) if trainer_settings.default_root_dir else None,
+        max_steps=settings.max_steps,
+        val_check_interval=settings.val_check_interval,
+        log_every_n_steps=settings.log_every_n_steps,
+        enable_progress_bar=settings.enable_progress_bar,
     )
 
     # Step _: Start training
@@ -214,9 +211,9 @@ if __name__ == "__main__":
     # The DataModule generates batches of walk data on-the-fly
     trainer.fit(
         # Lightning module: training step, optimizer, schedule computation
-        model=Model(settings.resolved_model_config),
+        model=Model(settings.model),
         # Data module: generates environment walks and batches
-        datamodule=PuzzleDatamodule(settings.datamodule_settings),
+        datamodule=PuzzleDatamodule(settings.datamodule),
         # Optional: resume from checkpoint
-        ckpt_path=str(settings.ckpt_path) if settings.ckpt_path else None,
+        ckpt_path=settings.checkpoint_path,
     )
