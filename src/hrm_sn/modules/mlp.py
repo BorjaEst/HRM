@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from pydantic import BaseModel, Field
 from torch import Tensor, nn
 
-from hrm_sn.modules.projections import CastedLinear
 from hrm_sn.types import Device, Dtype
 from hrm_sn.utils import _find_multiple
 
@@ -62,8 +61,8 @@ class SwiGLU(nn.Module):
         self._config = config
 
         inter = _find_multiple(round(config.expansion * config.hidden_size * 2 / 3), 256)
-        self.gate_up_proj = CastedLinear(config.hidden_size, inter * 2, bias=False)
-        self.down_proj = CastedLinear(inter, config.hidden_size, bias=False)
+        self.gate_up_proj = nn.Linear(config.hidden_size, inter * 2, bias=False, device=device, dtype=dtype)
+        self.down_proj = nn.Linear(inter, config.hidden_size, bias=False, device=device, dtype=dtype)
 
     @property
     def config(self) -> MLPConfig:

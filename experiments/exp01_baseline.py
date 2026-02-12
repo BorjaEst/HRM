@@ -20,7 +20,7 @@ from hrm_sn.loss.act_head import ACTLossConfig
 from hrm_sn.models.hrm_v1 import Model, ModelConfig_HRM_V1
 from hrm_sn.modules.hrm import HRMConfig
 from hrm_sn.training.act_controller import ACTControllerConfig
-from hrm_sn.training.optim import AdamATan2Config, CastedSparseEmbeddingSignSGDConfig
+from hrm_sn.training.optim import AdamATan2Config
 from hrm_sn.training.schedules import SchedulerConfig
 
 # Configure PyTorch for better performance on modern GPUs
@@ -69,13 +69,9 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         ...,
         description="Loss config. The keys in `loss` are passed to the loss head constructor.",
     )
-    optim_main: AdamATan2Config = Field(
+    optimizer: AdamATan2Config = Field(
         default_factory=AdamATan2Config,
         description="Main optimizer config for model parameters (e.g. Adam). The keys in `optim_main` are passed to the optimizer constructor.",
-    )
-    optim_emb: CastedSparseEmbeddingSignSGDConfig = Field(
-        default_factory=CastedSparseEmbeddingSignSGDConfig,
-        description="Puzzle embedding optimizer config (e.g. SignSGD). The keys in `optim_emb` are passed to the optimizer constructor.",
     )
     scheduler: SchedulerConfig = Field(
         default_factory=SchedulerConfig,

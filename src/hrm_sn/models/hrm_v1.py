@@ -15,7 +15,7 @@ from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.modules.hrm import HRMConfig, HRModel
 from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
-from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
+from hrm_sn.training.optim import AdamATan2, AdamATan2Config
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
 from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
 from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConfig, SequentialLR
@@ -40,13 +40,9 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
         ...,
         description="Loss config. The keys in `loss` are passed to the loss head constructor.",
     )
-    optim_main: AdamATan2Config = Field(
+    optimizer: AdamATan2Config = Field(
         default_factory=AdamATan2Config,
         description="Main optimizer config for model parameters (e.g. Adam). The keys in `optim_main` are passed to the optimizer constructor.",
-    )
-    optim_emb: CastedSparseEmbeddingSignSGDConfig = Field(
-        default_factory=CastedSparseEmbeddingSignSGDConfig,
-        description="Puzzle embedding optimizer config (e.g. SignSGD). The keys in `optim_emb` are passed to the optimizer constructor.",
     )
     scheduler: SchedulerConfig = Field(
         default_factory=SchedulerConfig,
@@ -113,13 +109,9 @@ class Model(L.LightningModule):
         return optimizers, schedulers
 
     def build_optimizers(self) -> List[Optimizer]:
-        # Main optimizer: all trainable parameters
-        main_params = [p for p in self.model.parameters() if p.requires_grad]
-        # Dummy secondary optimizer to preserve scheduler/step structure
-        optimizer_emb = CastedSparseEmbeddingSignSGD_Distributed([], self.config.optim_emb)
-        optimizer_main = AdamATan2(main_params, self.config.optim_main)
-
-        return [optimizer_main, optimizer_emb]
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        optimizer = AdamATan2(params, self.config.optimizer)
+        return [optimizer]
 
     def schedulers(self, optimizers: List[Optimizer]) -> List[SequentialLR]:
         total_steps = int(self.trainer.estimated_stepping_batches)
@@ -163,13 +155,14 @@ class Model(L.LightningModule):
         loss = step.loss / float(global_effective_bs)
         self.manual_backward(loss)
 
-        opt_main, opt_emb = self.optimizers()  # type: ignore
-        opt_main.step(); opt_main.zero_grad(set_to_none=True)  # fmt: skip
-        opt_emb.step(); opt_emb.zero_grad(set_to_none=True)  # fmt: skip
+        optimizers = self.optimizers()
+        for opt in optimizers if isinstance(optimizers, list) else [optimizers]:
+            opt.step()  # type: ignore
+            opt.zero_grad(set_to_none=True)
 
-        sch_main, sch_emb = self.lr_schedulers()  # type: ignore
-        sch_main.step()  # type: ignore
-        sch_emb.step()  # type: ignore
+        scheduler = self.lr_schedulers()
+        for sch in scheduler if isinstance(scheduler, list) else [scheduler]:
+            sch.step()  # type: ignore
 
         # log: ACTLossHead metrics are sums; normalize like legacy
         log_metrics = metrics.to_log_dict(step.metrics, prefix="train/", global_batch_size=global_effective_bs)

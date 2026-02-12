@@ -15,7 +15,6 @@ import torch.nn.functional as F
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from torch import Tensor, nn
 
-from hrm_sn.modules.projections import CastedLinear
 from hrm_sn.types import Device, Dtype
 
 
@@ -114,8 +113,8 @@ class Attention(nn.Module):
 
         self._qkv_head_count = config.num_heads + 2 * (config.num_kv_heads or config.num_heads)
         self._qkv_proj_out_dim = self._qkv_head_count * config.head_dim
-        self.in_proj = CastedLinear(config.embedding_dim, self._qkv_proj_out_dim, bias=False)
-        self.out_proj = CastedLinear(config.output_size, config.embedding_dim, bias=False)
+        self.in_proj = nn.Linear(config.embedding_dim, self._qkv_proj_out_dim, bias=False, device=device, dtype=dtype)
+        self.out_proj = nn.Linear(config.output_size, config.embedding_dim, bias=False, device=device, dtype=dtype)
 
     @property
     def config(self) -> AttentionConfig:

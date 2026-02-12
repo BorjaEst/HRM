@@ -1,13 +1,13 @@
 # Default configuration for training the hierarchical reasoning model with ACT
 project_name = "hrm_sn"
 run_name = "exp01_baseline"
-global_batch_size = 64
+global_batch_size = 16
 epochs = 10
 
 # architecture config 
 [architecture]
 vocab_size = 100
-seq_length = 1024
+seq_length = 900
 
 [architecture.transformer_block]
 embedding_dim = 512
@@ -16,15 +16,6 @@ is_causal = false
 expansion = 4.0
 rms_norm_eps = 1e-5
 
-[architecture.token_embeddings]
-num_embeddings = 100
-embedding_dim = 512
-init_std = 0.02
-
-[architecture.pos_embeddings]
-num_embeddings = 1024
-embedding_dim = 512
-init_std = 0.02
 
 [architecture.reasoning_h]
 layers = 4
@@ -44,15 +35,11 @@ halt_max_steps = 10
 function = "stablemax_cross_entropy"
 
 # Optimizer config
-[optim_main]
+[optimizer]
 lr = 1.0e-4
 weight_decay = 0.1
 betas = [0.9, 0.95]
 
-# Embeddings config
-[optim_emb]
-lr = 1.0e-2
-weight_decay = 0.1
 
 # Scheduler config
 [scheduler]

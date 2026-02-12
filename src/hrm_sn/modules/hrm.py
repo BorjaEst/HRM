@@ -23,7 +23,6 @@ from pydantic import BaseModel, Field
 from torch import Tensor, nn
 
 from hrm_sn.modules.attention import Attention, AttentionConfig
-from hrm_sn.modules.embeddings import Embedding, EmbeddingConfig
 from hrm_sn.modules.mlp import MLPConfig, SwiGLU
 from hrm_sn.types import Device, Dtype
 from hrm_sn.utils import trunc_normal_init_
@@ -46,12 +45,14 @@ class TransformerBlockConfig(BaseModel, extra="forbid"):
         frozen=True,
         description="Hidden size of the attention module.",
     )
+
     num_heads: int = Field(
         ...,
         ge=1,
         frozen=True,
         description="Number of attention heads.",
     )
+
     is_causal: bool = Field(
         default=False,
         description="Whether to apply causal masking in attention.",
@@ -180,20 +181,11 @@ class HRMConfig(BaseModel, extra="forbid"):
         ge=1,
         description="Vocabulary size for token embeddings and LM head.",
     )
-    token_embeddings: EmbeddingConfig = Field(
-        ...,
-        description="Configuration for token embeddings.",
-    )
 
-    # Model parameters for positions
     seq_length: int = Field(
         ...,
         ge=1,
         description="Sequence length for the model (number of tokens per example).",
-    )
-    pos_embeddings: EmbeddingConfig = Field(
-        ...,
-        description="Configuration for positional embeddings.",
     )
 
     # Model parameters for the core HRM architecture
@@ -223,6 +215,7 @@ class HRMConfig(BaseModel, extra="forbid"):
         default_factory=ReasoningConfig,
         description="Configuration for the high-level reasoning module.",
     )
+
     reasoning_l: ReasoningConfig = Field(
         default_factory=ReasoningConfig,
         description="Configuration for the low-level reasoning module.",
@@ -278,10 +271,10 @@ class HRModel(nn.Module):
         super().__init__()
         self._config = config
 
-        self.embed_tokens = Embedding(config.token_embeddings)
-        self.embed_pos = Embedding(config.pos_embeddings)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.halt_q_head = nn.Linear(config.hidden_size, 2, bias=True)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, device=device, dtype=dtype)
+        self.embed_pos = nn.Embedding(config.seq_length, config.hidden_size, device=device, dtype=dtype)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False, device=device, dtype=dtype)
+        self.halt_q_head = nn.Linear(config.hidden_size, 2, bias=True, device=device, dtype=dtype)
 
         # Reasoning Layers
         self.high_level = ReasoningModule(config.h_layers)
