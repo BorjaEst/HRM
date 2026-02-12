@@ -1,4 +1,8 @@
 # Default configuration for training the hierarchical reasoning model with ACT
+project_name = "hrm_sn"
+run_name = "exp01_baseline"
+global_batch_size = 64
+epochs = 10
 
 # architecture config 
 [architecture]
@@ -8,7 +12,7 @@ seq_length = 1024
 [architecture.transformer_block]
 embedding_dim = 512
 num_heads = 8
-is_casual = false
+is_causal = false
 expansion = 4.0
 rms_norm_eps = 1e-5
 
@@ -39,23 +43,23 @@ halt_max_steps = 10
 [loss]
 function = "stablemax_cross_entropy"
 
-# Random seed for reproducibility
-[data]
-seed = 42
-path = "data/maze-30x30-hard-1k"
-
-# Embeddings config
-[embeddings]
-optimizer.lr = 1.0e-2
-optimizer.weight_decay = 0.1
-
 # Optimizer config
-[optimizer]
+[optim_main]
 lr = 1.0e-4
 weight_decay = 0.1
 betas = [0.9, 0.95]
+
+# Embeddings config
+[optim_emb]
+lr = 1.0e-2
+weight_decay = 0.1
 
 # Scheduler config
 [scheduler]
 warmup_steps = 2000
 min_ratio = 1.0
+
+# Random seed for reproducibility
+[dataset]
+seed = 42
+dataset_path = "data/maze-30x30-hard-1k"

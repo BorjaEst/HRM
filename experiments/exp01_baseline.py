@@ -4,7 +4,7 @@ import json
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import torch
 from lightning.pytorch import Trainer, seed_everything
@@ -16,15 +16,12 @@ from hrm_sn.callbacks.figures import FiguresCallback, FiguresSettings
 from hrm_sn.data.puzzle_datamodule import PuzzleDatamodule, PuzzleDatamoduleConfig
 from hrm_sn.data.puzzle_dataset import PuzzleDatasetSettings
 from hrm_sn.logging.tensorboard import Logger, LoggerSettings
-from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
+from hrm_sn.loss.act_head import ACTLossConfig
 from hrm_sn.models.hrm_v1 import Model, ModelConfig_HRM_V1
 from hrm_sn.modules.hrm import HRMConfig
-from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
-from hrm_sn.training.buffers import FifoBuffer
-from hrm_sn.training.optim import AdamATan2, AdamATan2Config, CastedSparseEmbeddingSignSGD_Distributed, CastedSparseEmbeddingSignSGDConfig
-from hrm_sn.training.partial_reset import PartialResetBatchAssembler
-from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
-from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConfig, SequentialLR
+from hrm_sn.training.act_controller import ACTControllerConfig
+from hrm_sn.training.optim import AdamATan2Config, CastedSparseEmbeddingSignSGDConfig
+from hrm_sn.training.schedules import SchedulerConfig
 
 # Configure PyTorch for better performance on modern GPUs
 torch.set_float32_matmul_precision("medium")
