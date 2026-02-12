@@ -18,6 +18,7 @@ from torch import Tensor, nn
 from hrm_sn.modules.projections import CastedLinear
 
 
+# =================================================================================================
 class AttentionConfig(BaseModel, extra="forbid"):
     """Configuration for the :class:`Attention` module.
 
@@ -51,18 +52,23 @@ class AttentionConfig(BaseModel, extra="forbid"):
     num_kv_heads: Optional[int] = Field(
         default=None,
         frozen=True,
-        description="Number of key/value heads for grouped-query attention. If None, defaults to `num_heads` (no sharing).",
+        validate_default=True,
+        description="Key/value heads for grouped-query.",
     )
 
-    @field_validator("num_kv_heads")
+    @field_validator("num_kv_heads", mode="before")
     @classmethod
-    def _default_num_kv_heads(cls, v: int | None, info: ValidationInfo) -> int:
+    def _resolve_num_kv_heads(cls, v: int | None, info: ValidationInfo) -> int | None:
+        if v is not None:
+            return v
         num_heads = info.data.get("num_heads")
-        return v if v is not None else num_heads  # type: ignore[return-value]
+        return num_heads if num_heads is not None else v
 
-    @field_validator("num_kv_heads")
+    @field_validator("num_kv_heads", mode="after")
     @classmethod
-    def _validate_num_kv_heads(cls, v: int, info: ValidationInfo) -> int:
+    def _validate_num_kv_heads(cls, v: int | None, info: ValidationInfo) -> int | None:
+        if v is None:
+            return v  # shouldn’t happen if num_heads was present, but keeps this validator total
         num_heads = info.data.get("num_heads")
         if num_heads is None:
             return v
@@ -76,10 +82,7 @@ class AttentionConfig(BaseModel, extra="forbid"):
     def _set_num_kv_heads(cls, v, values):
         return v if v is not None else values.get("num_heads")
 
-    is_causal: bool = Field(
-        default=False,
-        description="Whether to apply causal masking in attention.",
-    )
+    is_causal: bool = Field(default=False, description="Apply causal masking in attention.")
 
     @property
     def head_dim(self) -> int:
@@ -92,6 +95,7 @@ class AttentionConfig(BaseModel, extra="forbid"):
         return self.head_dim * self.num_heads
 
 
+# =================================================================================================
 class Attention(nn.Module):
     """Multi-head attention with grouped-query attention support.
 
@@ -100,11 +104,13 @@ class Attention(nn.Module):
     `torch.nn.functional.scaled_dot_product_attention`.
     """
 
-    def __init__(self, config: AttentionConfig):
-        super().__init__()
+    def __init__(  # ------------------------------------------------------------------------------
+        self, config: AttentionConfig,
+    ) -> None:  # fmt: skip
         self._config = config
+        super().__init__()
 
-        self._qkv_head_count = config.num_heads + 2 * config.num_kv_heads  # type: ignore[assignment]
+        self._qkv_head_count = config.num_heads + 2 * (config.num_kv_heads or config.num_heads)
         self._qkv_proj_out_dim = self._qkv_head_count * config.head_dim
         self.in_proj = CastedLinear(config.embedding_dim, self._qkv_proj_out_dim, bias=False)
         self.out_proj = CastedLinear(config.output_size, config.embedding_dim, bias=False)
@@ -113,7 +119,9 @@ class Attention(nn.Module):
     def config(self) -> AttentionConfig:
         return self._config
 
-    def _compute_qkv(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def _compute_qkv(  # --------------------------------------------------------------------------
+        self, x: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:  # fmt: skip
         """Project and split inputs into q, k, and v tensors.
 
         Args:
@@ -139,7 +147,9 @@ class Attention(nn.Module):
         v = qkv[:, :, config.num_heads + config.num_kv_heads :]  # type: ignore[assignment]
         return q, k, v
 
-    def _expand_kv_heads(self, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
+    def _expand_kv_heads(  # ----------------------------------------------------------------------
+        self, k: Tensor, v: Tensor,
+    ) -> tuple[Tensor, Tensor]:  # fmt: skip
         """Repeat k/v heads for grouped-query attention when needed.
 
         SDPA expects matching head counts for Q/K/V. When `num_kv_heads < num_heads`,
@@ -153,7 +163,9 @@ class Attention(nn.Module):
         v = v.repeat_interleave(repeat, dim=1)
         return k, v
 
-    def forward(self, x: Tensor, *, attn_mask: Optional[Tensor] = None) -> Tensor:
+    def forward(  # -------------------------------------------------------------------------------
+        self, x: Tensor, *, attn_mask: Optional[Tensor] = None,
+    ) -> Tensor:  # fmt: skip
         """Compute attention outputs for a batch of sequences.
 
         Args:
