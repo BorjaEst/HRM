@@ -4,21 +4,35 @@ This module currently provides the feed-forward block used in HRM-style
 Transformer layers.
 """
 
+from typing import Optional
+
 import torch.nn.functional as F
 from pydantic import BaseModel, Field
-from torch import nn
+from torch import Tensor, nn
 
 from hrm_sn.modules.projections import CastedLinear
+from hrm_sn.types import Device, Dtype
 from hrm_sn.utils import _find_multiple
 
 
+# =================================================================================================
 class MLPConfig(BaseModel, extra="forbid"):
     """Configuration for the MLP (feed-forward) block used in HRM transformer layers."""
 
-    hidden_size: int = Field(..., ge=32, frozen=True, description="Hidden size of the MLP block.")
-    expansion: float = Field(default=4.0, gt=1.0, description="Expansion factor for the MLP layers in the transformer blocks.")
+    hidden_size: int = Field(
+        ...,
+        ge=32,
+        frozen=True,
+        description="Hidden size of the MLP block.",
+    )
+    expansion: float = Field(
+        default=4.0,
+        gt=1.0,
+        description="Expansion factor for the MLP layers in the transformer blocks.",
+    )
 
 
+# =================================================================================================
 class SwiGLU(nn.Module):
     """SwiGLU feed-forward (MLP) block with a gated activation.
 
@@ -33,7 +47,9 @@ class SwiGLU(nn.Module):
     to a multiple of 256 for efficiency.
     """
 
-    def __init__(self, config: MLPConfig):
+    def __init__(  # ------------------------------------------------------------------------------
+        self, config: MLPConfig, device: Optional[Device]=None, dtype: Optional[Dtype]=None,
+    ) -> None:  # fmt: skip
         """Initialize the SwiGLU block.
 
         Args:
@@ -54,7 +70,9 @@ class SwiGLU(nn.Module):
         """Configuration of the SwiGLU block."""
         return self._config
 
-    def forward(self, x):
+    def forward(  # -------------------------------------------------------------------------------
+        self, x: Tensor,
+    ) -> Tensor:  # fmt: skip
         """Apply the SwiGLU transformation.
 
         Args:

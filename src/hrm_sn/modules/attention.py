@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from torch import Tensor, nn
 
 from hrm_sn.modules.projections import CastedLinear
+from hrm_sn.types import Device, Dtype
 
 
 # =================================================================================================
@@ -106,7 +107,7 @@ class Attention(nn.Module):
     """
 
     def __init__(  # ------------------------------------------------------------------------------
-        self, config: AttentionConfig,
+        self, config: AttentionConfig, device: Optional[Device]=None, dtype: Optional[Dtype]=None,
     ) -> None:  # fmt: skip
         self._config = config
         super().__init__()

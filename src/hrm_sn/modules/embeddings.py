@@ -10,10 +10,13 @@ This module provides a single dense embedding implementation:
     with explicit dtype casting.
 """
 
+from typing import Optional
+
 import torch.nn.functional as F
 from pydantic import BaseModel, Field
 from torch import Tensor, nn
 
+from hrm_sn.types import Device, Dtype
 from hrm_sn.utils import trunc_normal_init_
 
 __all__ = ["Embedding", "EmbeddingConfig"]
@@ -22,9 +25,21 @@ __all__ = ["Embedding", "EmbeddingConfig"]
 # =================================================================================================
 class EmbeddingConfig(BaseModel, extra="forbid"):
 
-    num_embeddings: int = Field(..., ge=1, description="Number of embeddings (vocab size).")
-    embedding_dim: int = Field(..., ge=1, description="Dimensionality of each embedding vector.")
-    init_std: float = Field(default=0.02, ge=0.0, description="Truncated normal std for initialization.")
+    num_embeddings: int = Field(
+        ...,
+        ge=1,
+        description="Number of embeddings (vocab size).",
+    )
+    embedding_dim: int = Field(
+        ...,
+        ge=1,
+        description="Dimensionality of each embedding vector.",
+    )
+    init_std: float = Field(
+        default=0.02,
+        ge=0.0,
+        description="Truncated normal std for initialization.",
+    )
 
 
 # =================================================================================================
@@ -37,7 +52,7 @@ class Embedding(nn.Embedding):
     """
 
     def __init__(  # ------------------------------------------------------------------------------
-        self, config: EmbeddingConfig, device=None, dtype=None
+        self, config: EmbeddingConfig, device: Optional[Device]=None, dtype: Optional[Dtype]=None,
     ) -> None:  # fmt: skip
         self._config = config
         super().__init__(config.num_embeddings, config.embedding_dim, device=device, dtype=dtype)
@@ -55,14 +70,6 @@ class Embedding(nn.Embedding):
         dedicated method.
         """
         trunc_normal_init_(self.weight, std=self.config.init_std)
-
-    def extra_repr(  # ----------------------------------------------------------------------------
-        self
-    ) -> str:  # fmt: skip
-        return (
-            f"{self.config.num_embeddings}, {self.config.embedding_dim}, "
-            f"dtype={self.dtype}"
-        ) # fmt: skip
 
     def forward( # --------------------------------------------------------------------------------
         self, input: Tensor

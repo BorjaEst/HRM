@@ -25,9 +25,9 @@ from torch import Tensor, nn
 from hrm_sn.modules.attention import Attention, AttentionConfig
 from hrm_sn.modules.embeddings import Embedding, EmbeddingConfig
 from hrm_sn.modules.mlp import MLPConfig, SwiGLU
-from hrm_sn.modules.norms import rms_norm
-from hrm_sn.modules.projections import CastedLinear as Linear
+from hrm_sn.types import Device, Dtype
 from hrm_sn.utils import trunc_normal_init_
+from hrm_sn.utils.norms import rms_norm
 
 
 # =================================================================================================
@@ -40,16 +40,33 @@ class TransformerBlockConfig(BaseModel, extra="forbid"):
           stack of identical blocks.
     """
 
-    embedding_dim: int = Field(..., ge=32, frozen=True, description="Hidden size of the attention module.")
-    num_heads: int = Field(..., ge=1, frozen=True, description="Number of attention heads.")
-    is_causal: bool = Field(default=False, description="Whether to apply causal masking in attention.")
+    embedding_dim: int = Field(
+        ...,
+        ge=32,
+        frozen=True,
+        description="Hidden size of the attention module.",
+    )
+    num_heads: int = Field(
+        ...,
+        ge=1,
+        frozen=True,
+        description="Number of attention heads.",
+    )
+    is_causal: bool = Field(
+        default=False,
+        description="Whether to apply causal masking in attention.",
+    )
 
     @property
     def attention(self) -> AttentionConfig:
         """Convenience property to access the attention config."""
         return AttentionConfig.model_validate(self, from_attributes=True)
 
-    expansion: float = Field(default=4.0, gt=1.0, description="Expansion factor for the MLP layers in the transformer blocks.")
+    expansion: float = Field(
+        default=4.0,
+        gt=1.0,
+        description="Expansion factor for the MLP layers in the transformer blocks.",
+    )
 
     @property
     def hidden_size(self) -> int:
@@ -61,7 +78,10 @@ class TransformerBlockConfig(BaseModel, extra="forbid"):
         """Convenience property to construct the MLP config from the block config."""
         return MLPConfig.model_validate(self, from_attributes=True)
 
-    rms_norm_eps: float = Field(default=1e-5, description="Epsilon value for RMS normalization layers.")
+    rms_norm_eps: float = Field(
+        default=1e-5,
+        description="Epsilon value for RMS normalization layers.",
+    )
 
 
 # =================================================================================================
@@ -80,7 +100,7 @@ class TransformerBlock(nn.Module):
     """
 
     def __init__(  # ------------------------------------------------------------------------------
-        self, config: TransformerBlockConfig
+        self, config: TransformerBlockConfig, device: Optional[Device]=None, dtype: Optional[Dtype]=None,
     ) -> None:  # fmt: skip
         super().__init__()
         self._config = config
@@ -116,7 +136,7 @@ class ReasoningModule(nn.Module):
     """
 
     def __init__(  # ------------------------------------------------------------------------------
-        self, layers: List[TransformerBlockConfig]
+        self, layers: List[TransformerBlockConfig], device: Optional[Device]=None, dtype: Optional[Dtype]=None,
     ) -> None:  # fmt: skip
         super().__init__()
 
@@ -132,8 +152,18 @@ class ReasoningModule(nn.Module):
 
 # =================================================================================================
 class ReasoningConfig(BaseModel, extra="forbid"):
-    layers: int = Field(default=4, ge=1, description="Number of layers in each reasoning module (high-level and low-level).")
-    cycles: int = Field(default=2, ge=1, description="Number of cycles to alternate between high-level and low-level reasoning modules.")
+    """ """
+
+    layers: int = Field(
+        default=4,
+        ge=1,
+        description="Number of layers in each reasoning module (high-level and low-level).",
+    )
+    cycles: int = Field(
+        default=2,
+        ge=1,
+        description="Number of cycles to alternate between high-level and low-level reasoning modules.",
+    )
 
 
 # =================================================================================================
@@ -145,15 +175,32 @@ class HRMConfig(BaseModel, extra="forbid"):
     """
 
     # Model parameters for features
-    vocab_size: int = Field(..., ge=1, description="Vocabulary size for token embeddings and LM head.")
-    token_embeddings: EmbeddingConfig = Field(..., description="Configuration for token embeddings.")
+    vocab_size: int = Field(
+        ...,
+        ge=1,
+        description="Vocabulary size for token embeddings and LM head.",
+    )
+    token_embeddings: EmbeddingConfig = Field(
+        ...,
+        description="Configuration for token embeddings.",
+    )
 
     # Model parameters for positions
-    seq_length: int = Field(..., ge=1, description="Sequence length for the model (number of tokens per example).")
-    pos_embeddings: EmbeddingConfig = Field(..., description="Configuration for positional embeddings.")
+    seq_length: int = Field(
+        ...,
+        ge=1,
+        description="Sequence length for the model (number of tokens per example).",
+    )
+    pos_embeddings: EmbeddingConfig = Field(
+        ...,
+        description="Configuration for positional embeddings.",
+    )
 
     # Model parameters for the core HRM architecture
-    transformer_block: TransformerBlockConfig = Field(..., description="Base transformer block configuration.")
+    transformer_block: TransformerBlockConfig = Field(
+        ...,
+        description="Base transformer block configuration.",
+    )
 
     @property
     def hidden_size(self) -> int:
@@ -172,8 +219,14 @@ class HRMConfig(BaseModel, extra="forbid"):
         return 1.0 / math.sqrt(self.transformer_block.embedding_dim)
 
     # Reasoning module configs
-    reasoning_h: ReasoningConfig = Field(default_factory=ReasoningConfig, description="Configuration for the high-level reasoning module.")
-    reasoning_l: ReasoningConfig = Field(default_factory=ReasoningConfig, description="Configuration for the low-level reasoning module.")
+    reasoning_h: ReasoningConfig = Field(
+        default_factory=ReasoningConfig,
+        description="Configuration for the high-level reasoning module.",
+    )
+    reasoning_l: ReasoningConfig = Field(
+        default_factory=ReasoningConfig,
+        description="Configuration for the low-level reasoning module.",
+    )
 
     @property
     def h_layers(self) -> List[TransformerBlockConfig]:
@@ -220,15 +273,15 @@ class HRModel(nn.Module):
     """
 
     def __init__(  # ------------------------------------------------------------------------------
-        self, config: HRMConfig
+        self, config: HRMConfig, device: Optional[Device]=None, dtype: Optional[Dtype]=None,
     ) -> None:  # fmt: skip
         super().__init__()
         self._config = config
 
         self.embed_tokens = Embedding(config.token_embeddings)
         self.embed_pos = Embedding(config.pos_embeddings)
-        self.lm_head = Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.halt_q_head = Linear(config.hidden_size, 2, bias=True)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.halt_q_head = nn.Linear(config.hidden_size, 2, bias=True)
 
         # Reasoning Layers
         self.high_level = ReasoningModule(config.h_layers)
