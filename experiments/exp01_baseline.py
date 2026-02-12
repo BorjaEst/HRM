@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings, CliSettingsSource, PydanticBaseSetti
 from hrm_sn.callbacks.checkpoint import CheckpointCallback, CheckpointSettings
 from hrm_sn.callbacks.figures import FiguresCallback, FiguresSettings
 from hrm_sn.data.puzzle_datamodule import PuzzleDatamodule, PuzzleDatamoduleConfig
-from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetMetadata, PuzzleDatasetSettings
+from hrm_sn.data.puzzle_dataset import PuzzleDatasetSettings
 from hrm_sn.logging.tensorboard import Logger, LoggerSettings
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.models.hrm_v1 import Model, ModelConfig_HRM_V1
@@ -88,14 +88,34 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # =========================================================================
     # Data settings (passed as configs to DataModule)
     # =========================================================================
-
-    # =========================================================================
-    # Training control settings (passed as top-level settings for ease of CLI overrides)
-    # =========================================================================
+    dataset: PuzzleDatasetSettings = Field(
+        ...,
+        description="Configuration for the PuzzleDataset. This includes parameters like dataset path, random seed, etc.",
+    )
     global_batch_size: int = Field(
         ...,
         description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // world_size`.",
     )
+    num_workers: int = Field(
+        1,
+        description="Number of workers for DataLoader. PuzzleDataset currently expects 1 worker.",
+    )
+    prefetch_factor: int = Field(
+        8,
+        description="Number of batches to prefetch per worker.",
+    )
+    pin_memory: bool = Field(
+        True,
+        description="Whether to pin memory in DataLoader.",
+    )
+    persistent_workers: bool = Field(
+        True,
+        description="Whether to keep DataLoader workers alive between epochs.",
+    )
+
+    # =========================================================================
+    # Training control settings (passed as top-level settings for ease of CLI overrides)
+    # =========================================================================
     epochs: int = Field(..., description="Total number of epochs to train.")
 
     # =========================================================================
@@ -182,7 +202,7 @@ if __name__ == "__main__":
     settings = RunArguments(**defaults_from_path)
 
     # Step _: Seed everything for reproducibility
-    seed_everything(settings.datamodule.dataset.seed)
+    seed_everything(settings.dataset.seed)
 
     # Step _:
     # Preparation of callbacks list: checkpointing + optional figure generation

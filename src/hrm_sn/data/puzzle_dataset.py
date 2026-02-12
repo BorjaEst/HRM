@@ -1,9 +1,10 @@
 import json
 import os
+from typing import Literal
 
 import numpy as np
 import torch
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from torch.utils.data import IterableDataset, get_worker_info
 
 from hrm_sn.data.metadata import PuzzleDatasetMetadata
@@ -11,7 +12,6 @@ from hrm_sn.loss.act_head import IGNORE_LABEL_ID
 
 
 class PuzzleDatasetSettings(BaseModel):
-    # TODO: Review responsibilities with PuzzleDatamoduleSettings, maybe merge into one
     seed: int = Field(
         42,
         description="Random seed for reproducibility.",
@@ -20,49 +20,63 @@ class PuzzleDatasetSettings(BaseModel):
         ...,
         description="Path to the dataset directory containing `train/`, `test/`, etc. subdirectories.",
     )
-    global_batch_size: int = Field(
-        ...,
-        description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // num_replicas`.",
-    )
-    test_set_mode: bool = Field(
-        False,
-        description="Iterate in test set mode through the dataset without randomization, yields puzzle identifiers for each batch.",
-    )
-
     epochs_per_iter: int = Field(
         1,
         description="Epochs to iterate in each iteration. This is used to reduce overhead of randomization and shuffling.",
     )
 
+
+class PuzzleDatasetRuntime(BaseModel):
+    global_batch_size: int = Field(
+        ...,
+        description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // world_size`.",
+    )
     rank: int = Field(
         0,
-        description="Rank of the current process for distributed training. Should be in the range [0, num_replicas - 1].",
+        description="Rank of the current process for distributed training. Should be in the range [0, world_size - 1].",
     )
-    num_replicas: int = Field(
+    world_size: int = Field(
         1,
         description="Total number of processes for distributed training. The dataset is split across these processes according to `rank`.",
     )
 
+    @model_validator(mode="after")
+    def _validate_runtime(self) -> "PuzzleDatasetRuntime":
+        if self.world_size <= 0:
+            raise ValueError("world_size must be a positive integer.")
+        if not (0 <= self.rank < self.world_size):
+            raise ValueError(f"rank must be in [0, world_size - 1], got {self.rank} for world_size {self.world_size}.")
+        if self.global_batch_size % self.world_size != 0:
+            raise ValueError("global_batch_size must be divisible by world_size. " f"Got global_batch_size={self.global_batch_size}, world_size={self.world_size}.")
+        return self
+
+
+PuzzleDatasetMode = Literal["train", "eval"]
+
 
 class PuzzleDataset(IterableDataset):
-    def __init__(self, config: PuzzleDatasetSettings, split: str = "train"):
+    def __init__(
+        self,
+        settings: PuzzleDatasetSettings,
+        runtime: PuzzleDatasetRuntime,
+        mode: PuzzleDatasetMode,
+        split: str = "train",
+    ):
         super().__init__()
-        self.config = config
+        self.settings = settings
+        self.runtime = runtime
+        self.mode = mode
         self.split = split
         self.metadata = self._load_metadata()
 
-        # Checks
-        assert (
-            self.config.global_batch_size % self.config.num_replicas == 0
-        ), f"Global batch size {self.config.global_batch_size} must be multiples of nodes {self.config.num_replicas}."
-        self.local_batch_size = self.config.global_batch_size // self.config.num_replicas
+        self.local_batch_size = self.runtime.global_batch_size // self.runtime.world_size
 
         # State
         self._data = None
         self._iters = 0
 
     def _load_metadata(self) -> PuzzleDatasetMetadata:
-        with open(os.path.join(self.config.dataset_path, self.split, "dataset.json"), "r") as f:
+        with open(os.path.join(self.settings.dataset_path, self.split, "dataset.json"), "r") as f:
             return PuzzleDatasetMetadata(**json.load(f))
 
     def _lazy_load_dataset(self):
@@ -84,7 +98,7 @@ class PuzzleDataset(IterableDataset):
             self._data[set_name] = {
                 field_name: np.load(
                     os.path.join(
-                        self.config.dataset_path,
+                        self.settings.dataset_path,
                         self.split,
                         f"{set_name}__{field_name}.npy",
                     ),
@@ -129,11 +143,11 @@ class PuzzleDataset(IterableDataset):
             start_index = 0
             while start_index < total_examples:
                 # Compute indices
-                end_index = min(total_examples, start_index + self.config.global_batch_size)
+                end_index = min(total_examples, start_index + self.runtime.global_batch_size)
 
-                local_start = start_index + self.config.rank * self.local_batch_size
+                local_start = start_index + self.runtime.rank * self.local_batch_size
                 local_end = min(
-                    start_index + (self.config.rank + 1) * self.local_batch_size,
+                    start_index + (self.runtime.rank + 1) * self.local_batch_size,
                     end_index,
                 )
 
@@ -156,7 +170,7 @@ class PuzzleDataset(IterableDataset):
                 yield set_name, batch, end_index - start_index
 
                 # Advance to next batch
-                start_index += self.config.global_batch_size
+                start_index += self.runtime.global_batch_size
 
     def _iter_train(self):
         for set_name, dataset in self._data.items():  # type: ignore
@@ -164,9 +178,9 @@ class PuzzleDataset(IterableDataset):
             self._iters += 1
 
             # Randomly shuffle groups
-            rng = np.random.Generator(np.random.Philox(seed=self.config.seed + self._iters))
+            rng = np.random.Generator(np.random.Philox(seed=self.settings.seed + self._iters))
 
-            group_order = np.concatenate([rng.permutation(dataset["group_indices"].size - 1) for _i in range(self.config.epochs_per_iter)])
+            group_order = np.concatenate([rng.permutation(dataset["group_indices"].size - 1) for _i in range(self.settings.epochs_per_iter)])
             start_index = 0
 
             while start_index < group_order.size:
@@ -176,18 +190,18 @@ class PuzzleDataset(IterableDataset):
                     puzzle_indices=dataset["puzzle_indices"],
                     group_indices=dataset["group_indices"],
                     start_index=start_index,
-                    global_batch_size=self.config.global_batch_size,
+                    global_batch_size=self.runtime.global_batch_size,
                 )
 
                 # Select current rank and collate
                 global_effective_batch_size = batch_puzzle_indices.size  # Global effective batch size, excluding pads
 
                 # Drop last batch
-                if global_effective_batch_size < self.config.global_batch_size:
+                if global_effective_batch_size < self.runtime.global_batch_size:
                     break
 
-                batch_indices = batch_indices[self.config.rank * self.local_batch_size : (self.config.rank + 1) * self.local_batch_size]
-                batch_puzzle_indices = batch_puzzle_indices[self.config.rank * self.local_batch_size : (self.config.rank + 1) * self.local_batch_size]
+                batch_indices = batch_indices[self.runtime.rank * self.local_batch_size : (self.runtime.rank + 1) * self.local_batch_size]
+                batch_puzzle_indices = batch_puzzle_indices[self.runtime.rank * self.local_batch_size : (self.runtime.rank + 1) * self.local_batch_size]
                 batch = self._collate_batch(
                     {
                         "inputs": dataset["inputs"][batch_indices],
@@ -204,7 +218,7 @@ class PuzzleDataset(IterableDataset):
         self._lazy_load_dataset()
 
         # Iterate using specified mode
-        if self.config.test_set_mode:
+        if self.mode == "eval":
             yield from self._iter_test()
         else:
             yield from self._iter_train()
@@ -237,7 +251,7 @@ def _sample_batch(
 
         # Put into batch
         batch_puzzle_indices.append(np.full(append_size, puzzle_id, dtype=np.int32))
-        batch.append(puzzle_start + np.random.choice(puzzle_size, append_size, replace=False))
+        batch.append(puzzle_start + rng.choice(puzzle_size, append_size, replace=False))
 
         current_size += append_size
 

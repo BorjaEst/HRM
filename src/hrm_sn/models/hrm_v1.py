@@ -40,10 +40,6 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
         ...,
         description="Configuration for the ACT controller, which manages halting and partial resets during training. The keys in `act_controller` are passed to the ACTController constructor.",
     )
-    dataset: PuzzleDatasetSettings = Field(
-        default_factory=PuzzleDatasetSettings,
-        description="Configuration for the PuzzleDataset. This includes parameters like dataset path, batch size, random seed, etc.",
-    )
     loss: ACTLossConfig = Field(
         ...,
         description="Loss config. The keys in `loss` are passed to the loss head constructor.",
@@ -66,10 +62,6 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
         ...,
         description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // world_size`.",
     )  # TODO: consider moving to BufferSettings or similar
-    eval_save_outputs: List[str] = Field(
-        default_factory=list,
-        description="Evaluation output keys saved as tensors in the checkpoint directory.",
-    )
 
 
 @dataclass
