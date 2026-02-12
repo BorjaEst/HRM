@@ -16,26 +16,18 @@ from torch import Tensor, nn
 
 from hrm_sn.utils import trunc_normal_init_
 
+__all__ = ["Embedding", "EmbeddingConfig"]
 
+
+# =================================================================================================
 class EmbeddingConfig(BaseModel, extra="forbid"):
 
-    num_embeddings: int = Field(
-        ...,
-        ge=1,
-        description="Number of embeddings (vocab size).",
-    )
-    embedding_dim: int = Field(
-        ...,
-        ge=1,
-        description="Dimensionality of each embedding vector.",
-    )
-    init_std: float = Field(
-        default=0.02,
-        ge=0.0,
-        description="Standard deviation of the truncated normal distribution used for weight initialization.",
-    )
+    num_embeddings: int = Field(..., ge=1, description="Number of embeddings (vocab size).")
+    embedding_dim: int = Field(..., ge=1, description="Dimensionality of each embedding vector.")
+    init_std: float = Field(default=0.02, ge=0.0, description="Truncated normal std for initialization.")
 
 
+# =================================================================================================
 class Embedding(nn.Embedding):
     """Embedding layer with truncated normal initialization and explicit dtype casting.
 
@@ -44,16 +36,19 @@ class Embedding(nn.Embedding):
     configured compute dtype on each forward pass.
     """
 
-    def __init__(self, config: EmbeddingConfig, device=None, dtype=None):
-        super().__init__(config.num_embeddings, config.embedding_dim, device=device, dtype=dtype)
+    def __init__(  # ------------------------------------------------------------------------------
+        self, config: EmbeddingConfig, device=None, dtype=None
+    ) -> None:  # fmt: skip
         self._config = config
-        self.reset_parameters()
+        super().__init__(config.num_embeddings, config.embedding_dim, device=device, dtype=dtype)
 
     @property
     def config(self) -> EmbeddingConfig:
         return self._config
 
-    def reset_parameters(self) -> None:
+    def reset_parameters(  # ----------------------------------------------------------------------
+        self
+    ) -> None:  # fmt: skip
         """Initialize parameters.
 
         Mirrors the common PyTorch pattern of factoring initialization into a
@@ -61,13 +56,17 @@ class Embedding(nn.Embedding):
         """
         trunc_normal_init_(self.weight, std=self.config.init_std)
 
-    def extra_repr(self) -> str:
+    def extra_repr(  # ----------------------------------------------------------------------------
+        self
+    ) -> str:  # fmt: skip
         return (
             f"{self.config.num_embeddings}, {self.config.embedding_dim}, "
             f"dtype={self.dtype}"
         ) # fmt: skip
 
-    def forward(self, input: Tensor) -> Tensor:
+    def forward( # --------------------------------------------------------------------------------
+        self, input: Tensor
+    ) -> Tensor:  # fmt: skip
         """Lookup embeddings.
 
         Args:
@@ -77,6 +76,3 @@ class Embedding(nn.Embedding):
             Embedded vectors of shape ``(*input.shape, embedding_dim)``.
         """
         return F.embedding(input, self.weight.to(self.weight.dtype))
-
-
-__all__ = ["Embedding", "EmbeddingConfig"]
