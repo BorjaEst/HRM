@@ -12,8 +12,7 @@ license = { file = "LICENSE" }
 
 dependencies = [
     "torch",
-    "pytorch-lightning",
-    "tensorboard",
+    "lightning",
     "hydra-core",
     "omegaconf",
     "pydantic",
@@ -23,6 +22,10 @@ dependencies = [
     "einops",
     "pyyaml",
     "huggingface_hub",
+    "tensorboard",
+    "matplotlib",
+    "SciencePlots",
+    "pub-ready-plots",
 ]
 
 [project.optional-dependencies]
