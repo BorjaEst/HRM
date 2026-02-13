@@ -28,9 +28,9 @@ torch.set_float32_matmul_precision("medium")
 CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/defaults.toml")
 
 
-# ============================================================================
+# =================================================================================================
 # Settings Model
-# ============================================================================
+# =================================================================================================
 class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_name="run"):
     """ """
 
@@ -48,9 +48,8 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
             file_secret_settings,
         )
 
-    # =========================================================================
+    # ---------------------------------------------------------------------------------------------
     # Names and tracking
-    # =========================================================================
     project_name: Optional[str] = Field(
         default=None,
         description=(
@@ -66,9 +65,8 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         ),
     )
 
-    # =========================================================================
+    # ---------------------------------------------------------------------------------------------
     # Model architecture and data
-    # =========================================================================
     architecture: HRMConfig = Field(
         ...,
         description=(
@@ -103,9 +101,8 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         ),
     )
 
-    # =========================================================================
+    # ---------------------------------------------------------------------------------------------
     # Data settings (passed as configs to DataModule)
-    # =========================================================================
     dataset: PuzzleDatasetSettings = Field(
         ...,
         description=(
@@ -137,14 +134,12 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         description="Whether to keep DataLoader workers alive between epochs.",
     )
 
-    # =========================================================================
+    # ---------------------------------------------------------------------------------------------
     # Training control settings (passed as top-level settings for ease of CLI overrides)
-    # =========================================================================
     epochs: int = Field(..., description="Total number of epochs to train.")
 
-    # =========================================================================
+    # ---------------------------------------------------------------------------------------------
     # Core settings for model, data, and training configuration (passed as configs to modules)
-    # =========================================================================
     logger: Optional[LoggerSettings] = Field(
         default_factory=LoggerSettings,
         description="TensorBoard logger settings.",
@@ -158,9 +153,8 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         description="Figure generation callback settings.",
     )
 
-    # =========================================================================
+    # ---------------------------------------------------------------------------------------------
     # Training control settings (passed as kwargs to Lightning Trainer)
-    # =========================================================================
     max_steps: int = Field(
         default=20000,
         description="Maximum training steps.",
@@ -178,9 +172,8 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         description="Show progress bar during training.",
     )
 
-    # =========================================================================
+    # ---------------------------------------------------------------------------------------------
     # Extra options for training control (e.g., resuming from checkpoint)
-    # =========================================================================
     checkpoint_path: Optional[str] = Field(
         default=None,
         description=(
@@ -204,9 +197,8 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         description="Evaluation output keys saved as tensors in the checkpoint directory.",
     )
 
-    # =========================================================================
+    # ---------------------------------------------------------------------------------------------
     # Aggregate settings (compose leaf settings for modules)
-    # =========================================================================
     @property
     def model(self) -> ModelConfig_HRM_V1:
         """Compose ModelConfig_HRM_V1 from leaf settings."""
@@ -218,9 +210,9 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         return PuzzleDatamoduleConfig.model_validate(self, from_attributes=True)
 
 
-# ============================================================================
+# =================================================================================================
 # Main Entrypoint
-# ============================================================================
+# =================================================================================================
 if __name__ == "__main__":
     """Here goes a description
     # TODO: write a detailed docstring describing the main entrypoint, the training loop,
