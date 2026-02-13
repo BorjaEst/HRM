@@ -13,8 +13,8 @@ Key behaviors:
             and `PartialResetBatchAssembler`.
 
 The batch structure used throughout this file is:
-        `(set_name, batch_dict, global_effective_bs)`
-where `global_effective_bs` is used for distributed-safe normalization of loss/metrics.
+        `(set_name, batch_dict, effective_bs)`
+where `effective_bs` is used for distributed-safe normalization of loss/metrics.
 """
 
 import math
@@ -43,7 +43,7 @@ from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConf
 # NOTE: The training pipeline uses a "named split" batch to support multi-dataloader setups.
 # - `set_name`: split identifier (e.g. "train", "test", "val")
 # - `batch_dict`: tensor payload (expected keys depend on dataset; typically "inputs"/"labels")
-# - `global_effective_bs`: effective batch size across all devices for metric/loss normalization
+# - `effective_bs`: effective batch size across all devices for metric/loss normalization
 Batch: TypeAlias = Tuple[str, Dict[str, Tensor], int]
 Device = torch.device
 
@@ -206,13 +206,13 @@ class Model(L.LightningModule):
         if/when state initialization depends on the batch payload or effective batch size.
 
         Args:
-            batch: `(set_name, batch_dict, global_effective_bs)` tuple.
+            batch: `(set_name, batch_dict, effective_bs)` tuple.
 
         Returns:
             A `ModelState` with `carry=None` and metadata populated.
         """
-        set_name, batch_dict, global_effective_bs = batch
-        # TODO: properly use batch_dict and global_effective_bs if needed for state initialization
+        set_name, batch_dict, effective_bs = batch
+        # TODO: properly use batch_dict and effective_bs if needed for state initialization
         return ModelState(carry=None, set_name=set_name)
 
     def configure_optimizers(  # ------------------------------------------------------------------
@@ -264,16 +264,16 @@ class Model(L.LightningModule):
         Lightning calls this hook when using custom batch structures.
 
         Args:
-            batch: `(set_name, batch_dict, global_effective_bs)` tuple.
+            batch: `(set_name, batch_dict, effective_bs)` tuple.
             device: Target device.
             dataloader_idx: Index of the dataloader (unused).
 
         Returns:
             The same structured batch with all tensors moved to `device`.
         """
-        set_name, batch_dict, global_effective_bs = batch
+        set_name, batch_dict, effective_bs = batch
         batch_dict = {k: v.to(device, non_blocking=True) for k, v in batch_dict.items()}
-        return set_name, batch_dict, global_effective_bs
+        return set_name, batch_dict, effective_bs
 
     def on_train_epoch_start(  # ------------------------------------------------------------------
         self,
@@ -288,7 +288,7 @@ class Model(L.LightningModule):
 
     def training_step(  # -------------------------------------------------------------------------
         self, batch: Batch, batch_idx: int,
-    ) -> Tensor:  # fmt: skip
+    ) -> Dict[str, object]:  # fmt: skip
         """Run one training step with manual optimization.
 
         The training logic implements "partial reset": examples that halted in the previous
@@ -299,7 +299,7 @@ class Model(L.LightningModule):
             - Horizon is effectively 1: we run exactly one ACT/rollout step per mini-batch.
             - Loss is normalized by the *global* effective batch size for parity with legacy code.
         """
-        set_name, batch_dict, global_effective_bs = batch
+        set_name, batch_dict, effective_bs = batch
 
         # Initialize carry/state on the first batch
         if self._train_carry is None:
@@ -323,7 +323,7 @@ class Model(L.LightningModule):
         self._train_carry = step.carry
 
         # Normalize by global effective batch size for DDP-safe scaling.
-        loss = step.loss / float(global_effective_bs)
+        loss = step.loss / float(effective_bs)
         self.manual_backward(loss)
 
         optimizers = self.optimizers()
@@ -335,55 +335,35 @@ class Model(L.LightningModule):
         for sch in scheduler if isinstance(scheduler, list) else [scheduler]:
             sch.step()  # type: ignore
 
-        # ACTLossHead metrics are typically accumulated/summed; normalize for logging.
-        step_metrics = metrics.to_log_dict(step.metrics, global_batch_size=global_effective_bs)
-        self.log_common(f"train/{set_name}/", step_metrics, global_effective_bs)
-        self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=False)
-        self.log("train/accuracy", step_metrics["accuracy"], on_step=True, prog_bar=True)
-        self.log("train/steps", step_metrics["steps"], on_step=True)
+        metrics_raw = metrics.flatten_raw(step.metrics, prefix="train/")
+        metrics_raw = {key: value.detach() for key, value in metrics_raw.items()}
 
-        return loss
+        return {"loss": loss.detach(), "metrics": metrics_raw, "effective_bs": effective_bs}
 
     def validation_step(  # -----------------------------------------------------------------------
         self, batch: Batch, batch_idx: int,
-    ) -> None:  # fmt: skip
+    ) -> Dict[str, object]:  # fmt: skip
         """Run one validation step.
 
         Validation uses `EvaluationLoop` (no carry is persisted across batches here) and logs
         normalized metrics.
         """
-        set_name, batch_dict, global_effective_bs = batch
+        set_name, batch_dict, effective_bs = batch
 
-        # Horizon=1 matches legacy behavior: exactly one ACT step per mini-batch.
-        step_batches = repeat(batch_dict, 1)
+        # Run a full ACT rollout so halted-only metrics are meaningful.
+        step_batches = repeat(batch_dict)
+        max_steps = self.config.act_controller.halt_max_steps
 
         # Initialize carry/state on the first batch
         step = None
-        for step in EvaluationLoop(self.loss_head, step_batches):
+        for step in EvaluationLoop(self.loss_head, step_batches, max_steps=max_steps):
             pass  # TODO: Sum loss across steps?
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
+        metrics_raw = metrics.flatten_raw(step.metrics, prefix=f"val/{set_name}/")
+        metrics_raw = {key: value.detach() for key, value in metrics_raw.items()}
 
-        # ACTLossHead metrics are sums; normalize like legacy for logging.
-        step_metrics = metrics.to_log_dict(step.metrics, global_batch_size=global_effective_bs)
-        self.log_common(f"val/{set_name}/", step_metrics, global_effective_bs)
-
-    def log_common(  # ----------------------------------------------------------------------------
-        self, prefix: str, step_metrics: Dict[str, Tensor], global_effective_bs: Optional[int],
-    ) -> None:  # fmt: skip
-        """Log metrics shared across train/val.
-
-        Args:
-            prefix: Metric key prefix, including trailing slash (e.g. `"train/train/"`).
-            step_metrics: Normalized metric dict as returned by `metrics.to_log_dict()`.
-            global_effective_bs:
-                Currently unused, but kept for API symmetry and potential future logging.
-        """
-        self.log(f"{prefix}accuracy", step_metrics["accuracy"], on_epoch=True, prog_bar=True)
-        self.log(f"{prefix}exact_accuracy", step_metrics["exact_accuracy"], on_epoch=True)
-        self.log(f"{prefix}lm_loss", step_metrics["lm_loss"], on_epoch=True)
-        self.log(f"{prefix}q_halt_loss", step_metrics["q_halt_loss"], on_epoch=True)
-        self.log(f"{prefix}q_continue_loss", step_metrics["q_continue_loss"], on_epoch=True)
+        return {"set_name": set_name, "metrics": metrics_raw, "effective_bs": effective_bs}
 
 
 # =================================================================================================
