@@ -29,7 +29,9 @@ def flatten_raw(  # ------------------------------------------------------------
 
 
 def to_log_dict(  # ---------------------------------------------------------------------------
-    step_metrics: StepMetrics, *, prefix: str, global_batch_size: Optional[int | Tensor] = None,
+    step_metrics: StepMetrics, 
+    *,
+    prefix: str="", global_batch_size: Optional[int | Tensor] = None,
 ) -> Dict[str, Tensor]:  # fmt: skip
     """Return normalized log scalars with deterministic key names."""
     device = step_metrics.loss.lm_loss_sum.device
