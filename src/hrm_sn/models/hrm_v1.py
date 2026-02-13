@@ -1,7 +1,26 @@
+"""HRM v1 Lightning module.
+
+This module defines a PyTorch Lightning `LightningModule` wrapper around the core HRM
+architecture (`HRModel`) together with Adaptive Computation Time (ACT) control and loss
+computation.
+
+Key behaviors:
+        - **Manual optimization**: uses `automatic_optimization = False` and explicitly performs
+            backward/optimizer/scheduler steps for legacy parity.
+        - **Stateful training carry**: forwards a `carry` object across mini-batches to support
+            continuation/halting semantics.
+        - **Partial reset batching**: halted examples are replaced with fresh rows using a FIFO buffer
+            and `PartialResetBatchAssembler`.
+
+The batch structure used throughout this file is:
+        `(set_name, batch_dict, global_effective_bs)`
+where `global_effective_bs` is used for distributed-safe normalization of loss/metrics.
+"""
+
 import math
 from dataclasses import dataclass
 from itertools import repeat
-from typing import Any, Dict, List, Literal, Optional, Tuple, TypeAlias
+from typing import Any, Dict, List, Optional, Tuple, TypeAlias
 
 import lightning as L
 import torch
@@ -20,48 +39,102 @@ from hrm_sn.training.partial_reset import PartialResetBatchAssembler
 from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
 from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConfig, SequentialLR
 
-# TODO: Move later to types.py
-Batch: TypeAlias = Tuple[str, Dict[str, Tensor], int]  # (set_name, batch_dict, global_effective_batch_size)
+# TODO: Consider moving these aliases to `hrm_sn/types.py` once stabilized.
+# NOTE: The training pipeline uses a "named split" batch to support multi-dataloader setups.
+# - `set_name`: split identifier (e.g. "train", "test", "val")
+# - `batch_dict`: tensor payload (expected keys depend on dataset; typically "inputs"/"labels")
+# - `global_effective_bs`: effective batch size across all devices for metric/loss normalization
+Batch: TypeAlias = Tuple[str, Dict[str, Tensor], int]
 Device = torch.device
 
 
+# =================================================================================================
 class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
+    """Configuration for the HRM v1 Lightning module.
 
-    # Model architecture and data
+    This config is intentionally "spec-first": it wires together the HRM core model,
+    the ACT controller (adaptive computation time / halting logic), the loss head, and
+    the optimizer/scheduler settings used during training.
+
+    Notes:
+        - `extra="forbid"` ensures unknown keys fail fast when parsing configs.
+        - `global_batch_size` is used for scaling losses/metrics in a distributed setup.
+    """
+
     architecture: HRMConfig = Field(
         ...,
-        description="Architecture config for the HRM model. The keys in `architecture` are passed to the HRModel constructor.",
+        description=(
+            "Architecture config for the HRM model. "
+            "The keys in `architecture` are passed to the HRModel constructor."
+        ),
     )
+
     act_controller: ACTControllerConfig = Field(
         ...,
-        description="Configuration for the ACT controller, which manages halting and partial resets during training. The keys in `act_controller` are passed to the ACTController constructor.",
+        description=(
+            "Configuration for the ACT controller, which manages halting and partial resets during "
+            "training. "
+            "The keys in `act_controller` are passed to the ACTController constructor."
+        ),
     )
+
     loss: ACTLossConfig = Field(
         ...,
         description="Loss config. The keys in `loss` are passed to the loss head constructor.",
     )
+
     optimizer: AdamATan2Config = Field(
         default_factory=AdamATan2Config,
-        description="Main optimizer config for model parameters (e.g. Adam). The keys in `optim_main` are passed to the optimizer constructor.",
-    )
-    scheduler: SchedulerConfig = Field(
-        default_factory=SchedulerConfig,
-        description="Learning rate scheduler config. If not set, no learning rate scheduling is applied. The keys in `scheduler` are passed to the scheduler constructor.",
+        description=(
+            "Main optimizer config for model parameters (e.g. Adam). "
+            "The keys in `optim_main` are passed to the optimizer constructor."
+        ),
     )
 
-    # Extra
+    scheduler: SchedulerConfig = Field(
+        default_factory=SchedulerConfig,
+        description=(
+            "Learning rate scheduler config. If not set, no learning rate scheduling is applied. "
+            "The keys in `scheduler` are passed to the scheduler constructor."
+        ),
+    )
+
     global_batch_size: int = Field(
         ...,
-        description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // world_size`.",
+        description=(
+            "Global batch size across all devices. "
+            "The per-device batch size is computed as `global_batch_size // world_size`."
+        ),
     )  # TODO: consider moving to BufferSettings or similar
 
 
+# =================================================================================================
 @dataclass
 class ModelState:
-    carry: Any  # Model carry/state that persists across batches, initialized as None and set by the first batch
-    halt_logits: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the halt logits for the question, used for loss computation and evaluation
-    continue_logits: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the continue logits for the question, used for loss computation and evaluation
-    steps: Optional[Tensor] = None  # Optional tensor of shape (batch_size,) with the number of steps taken for each example, used for evaluation
+    """Runtime state that can persist across batches.
+
+    The HRM training loop is stateful: a "carry" object produced by the loss head
+    (and ultimately by the controller/model) can be forwarded from one mini-batch
+    to the next. This enables partial reset / continuation semantics where some
+    examples halt while others continue.
+
+    Attributes:
+        carry:
+            Arbitrary nested structure representing recurrent/ACT state.
+        halt_logits:
+            Optional per-example logits for halting (shape `(batch,)`).
+        continue_logits:
+            Optional per-example logits for continuing (shape `(batch,)`).
+        steps:
+            Optional per-example step count (shape `(batch,)`).
+        step_id, batch_id, set_name:
+            Metadata for downstream logging/debugging.
+    """
+
+    carry: Any  # Model carry/state that persists across batches, set by the first batch
+    halt_logits: Optional[Tensor] = None  # Optional tensor (batch_size,) with halt logits
+    continue_logits: Optional[Tensor] = None  # Optional tensor (batch_size,) with continue logits
+    steps: Optional[Tensor] = None  # Optional tensor (batch_size,) with number of steps for each example
 
     # Metadata
     step_id: Optional[int] = None  # Optional step identifier
@@ -69,20 +142,46 @@ class ModelState:
     set_name: Optional[str] = None  # Optional dataset split name (e.g. "train", "test", etc.)
 
 
+# =================================================================================================
 class Model(L.LightningModule):
-    def __init__(self, config: ModelConfig_HRM_V1):
+    """LightningModule wrapper for HRM v1 training.
+
+    This module composes:
+        - `HRModel`: the core architecture
+        - `ACTController`: halting/partial-reset logic
+        - `ACTLossHead`: computes loss and aggregates metrics
+
+    Training uses manual optimization (`automatic_optimization = False`) to preserve
+    legacy behavior (one backward pass, then explicit optimizer/scheduler steps).
+    """
+
+    def __init__(  # ------------------------------------------------------------------------------
+        self, config: ModelConfig_HRM_V1,
+    ) -> None:  # fmt: skip
+        """Initialize the HRM v1 Lightning module.
+
+        Args:
+            config: Parsed `ModelConfig_HRM_V1` with architecture/controller/loss/optim settings.
+
+        Notes:
+            - Initializes a FIFO buffer and `PartialResetBatchAssembler` used to implement
+              partial-reset semantics during training.
+            - `_train_carry` is initialized lazily from the first batch via `loss_head`.
+        """
         super().__init__()
         self.model = HRModel(config.architecture)
         self.controller = ACTController(self.model, config.act_controller)
         self.loss_head = ACTLossHead(self.controller, config.loss)
         self._config = config
 
-        # one backward, step two opts (legacy parity)
+        # Manual optimization: one backward, explicit opt/scheduler steps (legacy parity).
         self.automatic_optimization = False
         self._train_carry = None
         self._val_carry = None
 
-        # init buffers and assemblers for partial reset logic in training_step
+        # Buffer + assembler implement partial-reset batching:
+        # halted examples are "replaced" by new incoming rows, while continuing examples keep
+        # their state and may reuse buffered rows.
         self._train_buffer = FifoBuffer(
             capacity_rows=4 * config.global_batch_size,  # or local batch size if you prefer
             keys=("inputs", "labels"),
@@ -95,47 +194,119 @@ class Model(L.LightningModule):
 
     @property
     def config(self) -> ModelConfig_HRM_V1:
+        """Return the parsed configuration used by this module."""
         return self._config
 
-    def init_state(self, batch: Batch) -> ModelState:
+    def init_state(  # ----------------------------------------------------------------------------
+        self, batch: Batch,
+    ) -> ModelState:  # fmt: skip
+        """Create a fresh `ModelState` for a given batch.
+
+        This method is currently a thin shim and is kept for forward-compatibility
+        if/when state initialization depends on the batch payload or effective batch size.
+
+        Args:
+            batch: `(set_name, batch_dict, global_effective_bs)` tuple.
+
+        Returns:
+            A `ModelState` with `carry=None` and metadata populated.
+        """
         set_name, batch_dict, global_effective_bs = batch
         # TODO: properly use batch_dict and global_effective_bs if needed for state initialization
         return ModelState(carry=None, set_name=set_name)
 
-    def configure_optimizers(self) -> Tuple[List[Optimizer], List[SequentialLR]]:
+    def configure_optimizers(  # ------------------------------------------------------------------
+        self,
+    ) -> Tuple[List[Optimizer], List[SequentialLR]]:  # fmt: skip
+        """Build optimizers and LR schedulers.
+
+        Returns:
+            A tuple `(optimizers, schedulers)` in the format Lightning expects.
+        """
         optimizers = self.build_optimizers()
         schedulers = self.schedulers(optimizers)
 
         return optimizers, schedulers
 
-    def build_optimizers(self) -> List[Optimizer]:
+    def build_optimizers(  # ----------------------------------------------------------------------
+        self,
+    ) -> List[Optimizer]:  # fmt: skip
+        """Construct the optimizer(s) for trainable parameters.
+
+        Returns:
+            List containing a single `AdamATan2` optimizer for the HRM parameters.
+        """
         params = [p for p in self.model.parameters() if p.requires_grad]
         optimizer = AdamATan2(params, self.config.optimizer)
         return [optimizer]
 
-    def schedulers(self, optimizers: List[Optimizer]) -> List[SequentialLR]:
+    def schedulers(  # ----------------------------------------------------------------------------
+        self, optimizers: List[Optimizer],
+    ) -> List[SequentialLR]:  # fmt: skip
+        """Construct LR schedulers for the provided optimizers.
+
+        Args:
+            optimizers: Optimizers returned by `build_optimizers()`.
+
+        Returns:
+            A list of schedulers (one per optimizer). Currently uses cosine annealing with warmup.
+        """
         total_steps = int(self.trainer.estimated_stepping_batches)
         config = self.config.scheduler
         return [CosineAnnealingLRWithWarmup(opt, total_steps, config) for opt in optimizers]
 
-    def transfer_batch_to_device(self, batch: Batch, device: Device, dataloader_idx: int = 0) -> Batch:
+    def transfer_batch_to_device(  # --------------------------------------------------------------
+        self, batch: Batch, device: Device,
+        dataloader_idx: int = 0,
+    ) -> Batch:  # fmt: skip
+        """Move a structured batch to the target device.
+
+        Lightning calls this hook when using custom batch structures.
+
+        Args:
+            batch: `(set_name, batch_dict, global_effective_bs)` tuple.
+            device: Target device.
+            dataloader_idx: Index of the dataloader (unused).
+
+        Returns:
+            The same structured batch with all tensors moved to `device`.
+        """
         set_name, batch_dict, global_effective_bs = batch
         batch_dict = {k: v.to(device, non_blocking=True) for k, v in batch_dict.items()}
         return set_name, batch_dict, global_effective_bs
 
-    def on_train_epoch_start(self) -> None:
+    def on_train_epoch_start(  # ------------------------------------------------------------------
+        self,
+    ) -> None:  # fmt: skip
+        """Reset per-epoch training state.
+
+        Clears the training carry and the FIFO buffer so that partial-reset state does not leak
+        across epochs.
+        """
         self._train_carry = None
         self._train_buffer.clear()
 
-    def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
+    def training_step(  # -------------------------------------------------------------------------
+        self, batch: Batch, batch_idx: int,
+    ) -> Tensor:  # fmt: skip
+        """Run one training step with manual optimization.
+
+        The training logic implements "partial reset": examples that halted in the previous
+        step are replaced by new rows from the incoming batch, while continuing examples keep
+        their carry/state.
+
+        Notes:
+            - Horizon is effectively 1: we run exactly one ACT/rollout step per mini-batch.
+            - Loss is normalized by the *global* effective batch size for parity with legacy code.
+        """
         set_name, batch_dict, global_effective_bs = batch
 
         # Initialize carry/state on the first batch
         if self._train_carry is None:
             self._train_carry = self.loss_head.initial_carry(batch_dict)
 
-        # Partial reset logic: determine which examples in the batch are "reset" (halted)
-        # and which are "keep" (continue), then assemble the step batch accordingly
+        # Assemble a step batch using the previous carry's halted mask.
+        # `reset_mask=True` means "this row is done, replace it with a fresh example".
         step_batch = self._train_batch_assembler.make_step_batch(
             incoming=batch_dict,
             reset_mask=self._train_carry.halted,  # vectorized done flags
@@ -151,7 +322,7 @@ class Model(L.LightningModule):
             raise ValueError("RolloutLoop did not yield any steps, cannot proceed with training step.")
         self._train_carry = step.carry
 
-        # scaling: (1/global_batch_size) * loss, then backward TODO: use torch's built-in support for scaling
+        # Normalize by global effective batch size for DDP-safe scaling.
         loss = step.loss / float(global_effective_bs)
         self.manual_backward(loss)
 
@@ -164,19 +335,23 @@ class Model(L.LightningModule):
         for sch in scheduler if isinstance(scheduler, list) else [scheduler]:
             sch.step()  # type: ignore
 
-        # log: ACTLossHead metrics are sums; normalize like legacy
-        log_metrics = metrics.to_log_dict(step.metrics, prefix="train/", global_batch_size=global_effective_bs)
+        # ACTLossHead metrics are typically accumulated/summed; normalize for logging.
+        step_metrics = metrics.to_log_dict(step.metrics, global_batch_size=global_effective_bs)
+        self.log_common(f"train/{set_name}/", step_metrics, global_effective_bs)
         self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=False)
-        self.log("train/accuracy", log_metrics["train/accuracy"], on_step=True, prog_bar=True)
-        self.log("train/exact_accuracy", log_metrics["train/exact_accuracy"], on_step=True)
-        self.log("train/steps", log_metrics["train/steps"], on_step=True)
-        self.log("train/lm_loss", log_metrics["train/lm_loss"], on_step=True)
-        self.log("train/q_halt_loss", log_metrics["train/q_halt_loss"], on_step=True)
-        self.log("train/q_continue_loss", log_metrics["train/q_continue_loss"], on_step=True)
+        self.log("train/accuracy", step_metrics["accuracy"], on_step=True, prog_bar=True)
+        self.log("train/steps", step_metrics["steps"], on_step=True)
 
         return loss
 
-    def validation_step(self, batch: Batch, batch_idx: int) -> None:
+    def validation_step(  # -----------------------------------------------------------------------
+        self, batch: Batch, batch_idx: int,
+    ) -> None:  # fmt: skip
+        """Run one validation step.
+
+        Validation uses `EvaluationLoop` (no carry is persisted across batches here) and logs
+        normalized metrics.
+        """
         set_name, batch_dict, global_effective_bs = batch
 
         # Horizon=1 matches legacy behavior: exactly one ACT step per mini-batch.
@@ -188,17 +363,53 @@ class Model(L.LightningModule):
             pass  # TODO: Sum loss across steps?
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
-        log_metrics = metrics.to_log_dict(step.metrics, prefix=f"{set_name}/", global_batch_size=global_effective_bs)
 
-        self.log(f"{set_name}/accuracy", log_metrics[f"{set_name}/accuracy"], on_step=False, on_epoch=True)
-        self.log(f"{set_name}/exact_accuracy", log_metrics[f"{set_name}/exact_accuracy"], on_step=False, on_epoch=True)
-        self.log(f"{set_name}/lm_loss", log_metrics[f"{set_name}/lm_loss"], on_step=False, on_epoch=True)
-        self.log(f"{set_name}/q_halt_loss", log_metrics[f"{set_name}/q_halt_loss"], on_step=False, on_epoch=True)
-        self.log(f"{set_name}/q_continue_loss", log_metrics[f"{set_name}/q_continue_loss"], on_step=False, on_epoch=True)
+        # ACTLossHead metrics are sums; normalize like legacy for logging.
+        step_metrics = metrics.to_log_dict(step.metrics, global_batch_size=global_effective_bs)
+        self.log_common(f"val/{set_name}/", step_metrics, global_effective_bs)
+
+    def log_common(  # ----------------------------------------------------------------------------
+        self, prefix: str, step_metrics: Dict[str, Tensor], global_effective_bs: Optional[int],
+    ) -> None:  # fmt: skip
+        """Log metrics shared across train/val.
+
+        Args:
+            prefix: Metric key prefix, including trailing slash (e.g. `"train/train/"`).
+            step_metrics: Normalized metric dict as returned by `metrics.to_log_dict()`.
+            global_effective_bs:
+                Currently unused, but kept for API symmetry and potential future logging.
+        """
+        self.log(f"{prefix}accuracy", step_metrics["accuracy"], on_epoch=True, prog_bar=True)
+        self.log(f"{prefix}exact_accuracy", step_metrics["exact_accuracy"], on_epoch=True)
+        self.log(f"{prefix}lm_loss", step_metrics["lm_loss"], on_epoch=True)
+        self.log(f"{prefix}q_halt_loss", step_metrics["q_halt_loss"], on_epoch=True)
+        self.log(f"{prefix}q_continue_loss", step_metrics["q_continue_loss"], on_epoch=True)
 
 
-def cosine_lr(step: int, *, base_lr: float, warmup: int, total: int, min_ratio: float) -> float:
+# =================================================================================================
+def cosine_lr(  # ---------------------------------------------------------------------------------
+    step: int,
+    *,
+    base_lr: float, warmup: int, total: int, min_ratio: float,
+) -> float:  # fmt: skip
+    """Compute a warmup + cosine-decay learning rate multiplier.
+
+    This helper mirrors the common schedule:
+        - Linear warmup for `warmup` steps
+        - Cosine annealing from `base_lr` down to `base_lr * min_ratio` over the remaining steps
+
+    Args:
+        step: Current step (0-indexed).
+        base_lr: Peak learning rate.
+        warmup: Number of warmup steps.
+        total: Total number of steps in the schedule.
+        min_ratio: Minimum LR ratio at the end of the cosine schedule.
+
+    Returns:
+        The learning rate for the given step.
+    """
     if step < warmup:
         return base_lr * float(step) / float(max(1, warmup))
     progress = float(step - warmup) / float(max(1, total - warmup))
-    return base_lr * (min_ratio + max(0.0, (1 - min_ratio) * 0.5 * (1.0 + torch.cos(torch.tensor(progress * math.pi)).item())))
+    ratio = min_ratio + max(0.0, (1 - min_ratio) * 0.5 * (1.0 + math.cos(progress * math.pi)))
+    return base_lr * ratio
