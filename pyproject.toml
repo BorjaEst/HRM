@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68,<81", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -41,11 +41,11 @@ hrm_sn = ["py.typed", "**/*.yaml", "**/*.yml"]
 
 [tool.isort]
 profile = "black"
-line_length = 180
+line_length = 105
 known_first_party = ["hrm_sn"]
 
 [tool.black]
-line-length = 180
+line-length = 105
 target-version = ["py312"]
 include = '\.pyi?$'
 

@@ -42,10 +42,14 @@ class RolloutLoop(Iterator[ACTStepOutput]):
         self.stop_on_all_finish = stop_on_all_finish
         self._done = False
 
-    def __iter__(self) -> RolloutLoop:
+    def __iter__(  # ------------------------------------------------------------------------------
+        self,
+    ) -> RolloutLoop:  # fmt: skip
         return self
 
-    def __next__(self) -> ACTStepOutput:
+    def __next__(  # ------------------------------------------------------------------------------
+        self,
+    ) -> ACTStepOutput:  # fmt: skip
         if self._done:  # Check if we've already stopped due to all_finished
             raise StopIteration
 
@@ -63,6 +67,7 @@ class RolloutLoop(Iterator[ACTStepOutput]):
         return output
 
 
+# =================================================================================================
 class EvaluationLoop(Iterator[ACTStepOutput]):
     """
     Convenience: initialize carry from batch, then run until all_finish.
@@ -87,10 +92,14 @@ class EvaluationLoop(Iterator[ACTStepOutput]):
         self.stop_on_all_finish = stop_on_all_finish
         self._done = False
 
-    def __iter__(self) -> EvaluationLoop:
+    def __iter__(  # ------------------------------------------------------------------------------
+        self,
+    ) -> EvaluationLoop:  # fmt: skip
         return self
 
-    def __next__(self) -> ACTStepOutput:
+    def __next__(  # ------------------------------------------------------------------------------
+        self,
+    ) -> ACTStepOutput:  # fmt: skip
         if self._done:  # Check if we've already stopped due to all_finished
             raise StopIteration
 

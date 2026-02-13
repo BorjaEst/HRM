@@ -40,18 +40,30 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         env_settings: PydanticBaseSettingsSource, dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> Tuple[PydanticBaseSettingsSource, ...]:  # fmt: skip
-        return (CliSettingsSource(settings_cls), init_settings, env_settings, dotenv_settings, file_secret_settings)
+        return (
+            CliSettingsSource(settings_cls),
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     # =========================================================================
     # Names and tracking
     # =========================================================================
     project_name: Optional[str] = Field(
         default=None,
-        description="Project name. If not set, it defaults to the capitalized name of the dataset (e.g. `MATH` -> `Math ACT-torch`).",
+        description=(
+            "Project name. If not set, it defaults to the capitalized name of the dataset "
+            "(e.g. `MATH` -> `Math ACT-torch`)."
+        ),
     )
     run_name: Optional[str] = Field(
         default=None,
-        description="Run name. If not set, it defaults to `<arch_name> <random_slug>` (e.g. `HrmV1 2x128 4L 16H 0.1D ACT-torch cool-slug`).",
+        description=(
+            "Run name. If not set, it defaults to `<arch_name> <random_slug>` "
+            "(e.g. `HrmV1 2x128 4L 16H 0.1D ACT-torch cool-slug`)."
+        ),
     )
 
     # =========================================================================
@@ -59,11 +71,18 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # =========================================================================
     architecture: HRMConfig = Field(
         ...,
-        description="Architecture config for the HRM model. The keys in `architecture` are passed to the HRModel constructor.",
+        description=(
+            "Architecture config for the HRM model. The keys in `architecture` are passed to the"
+            "HRModel constructor."
+        ),
     )
     act_controller: ACTControllerConfig = Field(
         ...,
-        description="Configuration for the ACT controller, which manages halting and partial resets during training. The keys in `act_controller` are passed to the ACTController constructor.",
+        description=(
+            "Configuration for the ACT controller, which manages halting and partial resets"
+            "during training. "
+            "The keys in `act_controller` are passed to the ACTController constructor."
+        ),
     )
     loss: ACTLossConfig = Field(
         ...,
@@ -71,11 +90,17 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     )
     optimizer: AdamATan2Config = Field(
         default_factory=AdamATan2Config,
-        description="Main optimizer config for model parameters (e.g. Adam). The keys in `optim_main` are passed to the optimizer constructor.",
+        description=(
+            "Main optimizer config for model parameters (e.g. Adam). "
+            "The keys in `optim_main` are passed to the optimizer constructor."
+        ),
     )
     scheduler: SchedulerConfig = Field(
         default_factory=SchedulerConfig,
-        description="Learning rate scheduler config. If not set, no learning rate scheduling is applied. The keys in `scheduler` are passed to the scheduler constructor.",
+        description=(
+            "Learning rate scheduler config. If not set, no learning rate scheduling is applied. "
+            "The keys in `scheduler` are passed to the scheduler constructor."
+        ),
     )
 
     # =========================================================================
@@ -83,15 +108,21 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # =========================================================================
     dataset: PuzzleDatasetSettings = Field(
         ...,
-        description="Configuration for the PuzzleDataset. This includes parameters like dataset path, random seed, etc.",
+        description=(
+            "Configuration for the PuzzleDataset. "
+            "This includes parameters like dataset path, random seed, etc."
+        ),
     )
     global_batch_size: int = Field(
         ...,
-        description="Global batch size across all devices. The per-device batch size is computed as `global_batch_size // world_size`.",
+        description=(
+            "Global batch size across all devices. "
+            "The per-device batch size is computed as `global_batch_size // world_size`."
+        ),
     )
     num_workers: int = Field(
         1,
-        description="Number of workers for DataLoader. PuzzleDataset currently expects 1 worker.",
+        description="Number of workers for DataLoader, currently expects 1 worker.",
     )
     prefetch_factor: int = Field(
         8,
@@ -152,7 +183,10 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # =========================================================================
     checkpoint_path: Optional[str] = Field(
         default=None,
-        description="Path to save checkpoints and logs. If not set, it defaults to `checkpoints/<project_name>/<run_name>`.",
+        description=(
+            "Path to save checkpoints and logs. "
+            "If not set, it defaults to `checkpoints/<project_name>/<run_name>`."
+        ),
     )
     checkpoint_every_eval: bool = Field(
         default=False,
@@ -160,7 +194,10 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     )
     eval_interval: Optional[int] = Field(
         default=None,
-        description="Number of epochs between evaluations. If not set, it defaults to evaluating only at the end of training.",
+        description=(
+            "Number of epochs between evaluations. "
+            "If not set, it defaults to evaluating only at the end of training."
+        ),
     )
     eval_save_outputs: List[str] = Field(
         default_factory=list,
