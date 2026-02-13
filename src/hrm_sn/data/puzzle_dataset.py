@@ -45,9 +45,14 @@ class PuzzleDatasetRuntime(BaseModel):
         if self.world_size <= 0:
             raise ValueError("world_size must be a positive integer.")
         if not (0 <= self.rank < self.world_size):
-            raise ValueError(f"rank must be in [0, world_size - 1], got {self.rank} for world_size {self.world_size}.")
+            raise ValueError(
+                f"rank must be in [0, world_size - 1], got {self.rank} for world_size {self.world_size}."
+            )
         if self.global_batch_size % self.world_size != 0:
-            raise ValueError("global_batch_size must be divisible by world_size. " f"Got global_batch_size={self.global_batch_size}, world_size={self.world_size}.")
+            raise ValueError(
+                "global_batch_size must be divisible by world_size. "
+                f"Got global_batch_size={self.global_batch_size}, world_size={self.world_size}."
+            )
         return self
 
 
@@ -155,7 +160,10 @@ class PuzzleDataset(IterableDataset):
                 puzzle_indices = []
                 puzzle_index = np.searchsorted(dataset["puzzle_indices"], local_start, side="right") - 1
                 for i in range(local_start, local_end):
-                    while puzzle_index + 1 < len(dataset["puzzle_indices"]) and i >= dataset["puzzle_indices"][puzzle_index + 1]:
+                    while (
+                        puzzle_index + 1 < len(dataset["puzzle_indices"])
+                        and i >= dataset["puzzle_indices"][puzzle_index + 1]
+                    ):
                         puzzle_index += 1
 
                     puzzle_indices.append(puzzle_index)
@@ -180,7 +188,12 @@ class PuzzleDataset(IterableDataset):
             # Randomly shuffle groups
             rng = np.random.Generator(np.random.Philox(seed=self.settings.seed + self._iters))
 
-            group_order = np.concatenate([rng.permutation(dataset["group_indices"].size - 1) for _i in range(self.settings.epochs_per_iter)])
+            group_order = np.concatenate(
+                [
+                    rng.permutation(dataset["group_indices"].size - 1)
+                    for _i in range(self.settings.epochs_per_iter)
+                ]
+            )
             start_index = 0
 
             while start_index < group_order.size:
@@ -194,14 +207,22 @@ class PuzzleDataset(IterableDataset):
                 )
 
                 # Select current rank and collate
-                global_effective_batch_size = batch_puzzle_indices.size  # Global effective batch size, excluding pads
+                effective_bs = batch_puzzle_indices.size  # Global effective batch size, excluding pads
 
                 # Drop last batch
-                if global_effective_batch_size < self.runtime.global_batch_size:
+                if effective_bs < self.runtime.global_batch_size:
                     break
 
-                batch_indices = batch_indices[self.runtime.rank * self.local_batch_size : (self.runtime.rank + 1) * self.local_batch_size]
-                batch_puzzle_indices = batch_puzzle_indices[self.runtime.rank * self.local_batch_size : (self.runtime.rank + 1) * self.local_batch_size]
+                batch_indices = batch_indices[
+                    self.runtime.rank
+                    * self.local_batch_size : (self.runtime.rank + 1)
+                    * self.local_batch_size
+                ]
+                batch_puzzle_indices = batch_puzzle_indices[
+                    self.runtime.rank
+                    * self.local_batch_size : (self.runtime.rank + 1)
+                    * self.local_batch_size
+                ]
                 batch = self._collate_batch(
                     {
                         "inputs": dataset["inputs"][batch_indices],
@@ -209,11 +230,13 @@ class PuzzleDataset(IterableDataset):
                     }
                 )
 
-                yield set_name, batch, global_effective_batch_size
+                yield set_name, batch, effective_bs
 
     def __iter__(self):
         worker_info = get_worker_info()
-        assert worker_info is None or worker_info.num_workers == 1, "Multithreaded data loading is not currently supported."
+        assert (
+            worker_info is None or worker_info.num_workers == 1
+        ), "Multithreaded data loading is not currently supported."
 
         self._lazy_load_dataset()
 
