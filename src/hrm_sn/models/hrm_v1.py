@@ -122,23 +122,18 @@ class TraceFields:
 
     @staticmethod
     def get_model_halt_logits(ctx: StepContext) -> TraceValue:
-        halt_logits: Optional[Tensor] = ctx.carry.halt_logits  # Tensor of shape (batch_size,)
+        halt_logits: Optional[Tensor] = ctx.outputs.outputs.halt_logits  # Tensor shape (B,)
         return halt_logits.detach() if halt_logits is not None else None
 
     @staticmethod
     def get_model_continue_logits(ctx: StepContext) -> TraceValue:
-        continue_logits: Optional[Tensor] = ctx.carry.continue_logits  # Tensor of shape (batch_size,)
+        continue_logits: Optional[Tensor] = ctx.outputs.outputs.continue_logits  # Tensor shape (B,)
         return continue_logits.detach() if continue_logits is not None else None
 
     @staticmethod
     def get_model_steps(ctx: StepContext) -> TraceValue:
-        steps: Optional[Tensor] = ctx.carry.steps  # Tensor of shape (batch_size,)
+        steps: Optional[Tensor] = ctx.carry.steps  # Tensor shape (B,)
         return steps.detach() if steps is not None else None
-
-    @staticmethod
-    def get_model_state(ctx: StepContext) -> TraceValue:
-        s: HRMState = ctx.carry.model_state  # HRMState dataclass
-        return {"z_H": s.z_H, "z_L": s.z_L}
 
     @classmethod
     def get_all_fields(cls) -> List[TraceField[StepContext]]:
@@ -378,7 +373,7 @@ class Model(L.LightningModule):
         self._train_carry = step.carry
 
         # Normalize by global effective batch size for DDP-safe scaling.
-        loss = step.loss / float(effective_bs)
+        loss = step.outputs.loss / float(effective_bs)
         self.manual_backward(loss)
 
         optimizers = self.optimizers()

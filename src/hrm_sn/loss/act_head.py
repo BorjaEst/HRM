@@ -119,16 +119,8 @@ class ACTStepOutput:
     """Per-step output contract for loss heads and rollout loops."""
 
     loss: Tensor  # Scalar loss for this step, used for back-propagation
-    carry: ACTState  # Updated carry/state after this step, used for the next step's input
     metrics: StepMetrics  # Aggregated metrics for this step, used for logging
-
-    t: Optional[int] = None  # Step index (optional, may be set by the rollout loop)
     outputs: Optional[ACTOutput] = None  # Raw controller outputs
-
-    @property
-    def all_finished(self) -> Tensor:
-        """Whether all sequences in the batch have halted."""
-        return self.carry.halted.all()
 
 
 # =================================================================================================
@@ -183,9 +175,9 @@ class ACTLossHead(nn.Module):
         return self.controller.initial_state(batch_sample)
 
     def forward(  # -------------------------------------------------------------------------------
-        self, batch: Batch, carry: ACTState, t: Optional[int]=None,
+        self, batch: Batch, carry: ACTState,
         **options,
-    ) -> ACTStepOutput:  # fmt: skip
+    ) -> Tuple[ACTStepOutput, ACTState, bool]:  # fmt: skip
         """Run one ACT step, returning the step loss, updated state, and metrics.
 
         Callers must provide explicit flags to control halting, exploration, and
@@ -202,7 +194,8 @@ class ACTLossHead(nn.Module):
         losses = self.compute_losses(outputs, labels, stats)
         metrics = self.compute_metrics(carry, outputs, stats, losses)
 
-        return ACTStepOutput(loss=losses.total, carry=carry, metrics=metrics, t=t, outputs=outputs)
+        outputs = ACTStepOutput(loss=losses.total, metrics=metrics, outputs=outputs)
+        return outputs, carry, bool(carry.halted.all())
 
     def compute_correctness(  # ------------------------------------------------------------------
         self, outputs: ACTOutput, labels: Tensor

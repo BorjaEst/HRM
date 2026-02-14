@@ -6,9 +6,10 @@ Pattern with explicit handling of dense data and static metadata.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields, is_dataclass
+from collections.abc import Mapping as MappingABC
+from dataclasses import dataclass, field
 from numbers import Number
-from typing import Any, Iterable, Iterator, List, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 import numpy as np
 
@@ -43,7 +44,6 @@ class TraceNode:
         self, name: str,
     ) -> TraceNode:  # fmt: skip
         """Return (or create) a child node by name."""
-
         if name not in self.children:
             self.children[name] = TraceNode()
         return self.children[name]
@@ -52,22 +52,18 @@ class TraceNode:
         self, key: str, value: np.ndarray,
     ) -> None:  # fmt: skip
         """Append a dense value to the buffer for a given key."""
-
         self._buffers.setdefault(key, []).append(value)
 
     def finalize(  # ------------------------------------------------------------------------------
         self, *, length: int, strict: bool,
     ) -> None:  # fmt: skip
         """Stack buffered data into dense arrays and recurse into children."""
-
         for key, values in self._buffers.items():
             if strict and len(values) != length:
-                raise ValueError(
-                    "Incomplete data buffer for key " f"{key!r}: expected {length}, got {len(values)}"
-                )
+                err_msg = f"Incomplete data buffer for key {key!r}: expected {length}, got {len(values)}"
+                raise ValueError(err_msg)
             self.data[key] = np.stack(values, axis=0)
         self._buffers.clear()
-
         for child in self.children.values():
             child.finalize(length=length, strict=strict)
 
@@ -75,17 +71,12 @@ class TraceNode:
         self, t0: int, t1: int, *, rebase: bool,
     ) -> "TraceNode":  # fmt: skip
         """Return a time-sliced copy of this node."""
-
         sliced = TraceNode()
-
         for key, arr in self.data.items():
             sliced.data[key] = arr[t0:t1]
-
         sliced.meta_static = dict(self.meta_static)
-
         for name, child in self.children.items():
             sliced.children[name] = child.slice_time(t0, t1, rebase=rebase)
-
         return sliced
 
 
@@ -103,7 +94,6 @@ class TraceTree:
         self, state: Any,
     ) -> None:  # fmt: skip
         """Append a state snapshot into the trace tree."""
-
         t = self.length
         _append_state(node=self.root, state=state, t=t, path=(), tree=self)
         self.length += 1
@@ -112,14 +102,12 @@ class TraceTree:
         self,
     ) -> None:  # fmt: skip
         """Finalize the trace by stacking buffered data into arrays."""
-
         self.root.finalize(length=self.length, strict=self.config.strict)
 
     def slice_time(  # ----------------------------------------------------------------------------
         self, t0: int, t1: int,
     ) -> "TraceTree":  # fmt: skip
         """Return a time-sliced copy of the trace."""
-
         t0 = max(0, t0)
         t1 = min(self.length, t1)
         sliced = TraceTree(config=self.config)
@@ -236,16 +224,20 @@ def _append_state(  # ----------------------------------------------------------
     *, node: TraceNode, state: Any, t: int, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
     """Append a state tree into the trace tree (recursive)."""
-
-    if _is_dataclass_instance(state):
-        for field_info in fields(state):
-            name = field_info.name
-            value = getattr(state, name)
-            _append_value(node=node, name=name, value=value, t=t, path=path, tree=tree)
+    if _is_mapping_instance(state):
+        if tree.config.strict:
+            keys = tuple(sorted(str(k) for k in state.keys()))
+            prev = node.meta_static.get("_schema_keys")
+            if prev is None:
+                node.meta_static["_schema_keys"] = keys
+            elif prev != keys:
+                full_path = "/".join(path) or "<root>"
+                raise ValueError(f"Schema keys changed at {full_path}: {prev} -> {keys}")
+        for key, value in state.items():
+            _append_value(node=node, name=key, value=value, t=t, path=path, tree=tree)
         return
-
     raise TypeError(
-        "State must be a dataclass instance. "
+        "State must be a mapping-like instance. "
         f"Got {type(state)!r} at path {"/".join(path) or "<root>"}."
     )
 
@@ -255,29 +247,28 @@ def _append_value(  # ----------------------------------------------------------
     *, node: TraceNode, name: str, value: Any, t: int, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
     """Append a single field value into the trace tree."""
-
     current_path = path + (name,)
-
-    if _is_dataclass_instance(value):
+    if _is_mapping_instance(value):
         child = node.child(name)
         _append_state(node=child, state=value, t=t, path=current_path, tree=tree)
         return
-
     if _is_list_of_numeric_arrays(value):
         container = node.child(name)
         container.meta_static.setdefault("length", len(value))
         for idx, elem in enumerate(value):
             arr = _to_numeric_array(elem)
-            _append_dense(
-                node=container, key=str(idx), arr=arr, t=t, path=current_path + (str(idx),), tree=tree
-            )
+            if arr is None:
+                if tree.config.strict:
+                    full_path = "/".join(current_path + (str(idx),))
+                    raise ValueError(f"Non-numeric list element at {full_path}")
+                continue
+            options = {"key": str(idx), "arr": arr, "t": t, "tree": tree}
+            _append_dense(node=container, key=str(idx), path=current_path + (str(idx),), **options)
         return
-
     arr = _to_numeric_array(value)
     if arr is not None:
-        _append_dense(node=node, key=name, arr=arr, t=t, path=current_path + (name,), tree=tree)
+        _append_dense(node=node, key=name, arr=arr, t=t, path=current_path, tree=tree)
         return
-
     _record_static_meta(node, name, value, strict=tree.config.strict)
 
 
@@ -286,12 +277,10 @@ def _append_dense(  # ----------------------------------------------------------
     *, node: TraceNode, key: str, arr: np.ndarray, t: int, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
     """Append a dense numeric array with validation."""
-
     if arr.dtype == object:
         if tree.config.strict:
             raise ValueError(f"Irregular value for key {key!r} at t={t}")
         return
-
     _validate_batch(arr, path=path, tree=tree)
     _validate_shape(node, key, arr, path=path, tree=tree)
     node.append_data(key, arr)
@@ -302,25 +291,20 @@ def _validate_batch(  # --------------------------------------------------------
     arr: np.ndarray, *, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
     """Validate or set the batch size for batched arrays."""
-
     if arr.ndim == 0:
         return
-
     full_path = "/".join(path)
     if full_path in tree.config.global_paths:
         return
-
     if tree.batch_size is None:
         tree.batch_size = int(arr.shape[0])
         return
-
     if int(arr.shape[0]) != tree.batch_size:
-        _raise_or_event(
-            tree,
-            ValueError(
-                "Batch size mismatch at " f"{full_path}: expected {tree.batch_size}, got {arr.shape[0]}"
-            ),
-        )
+        err_msg = (
+            f"Batch size mismatch at {full_path}: "
+            f"expected {tree.batch_size}, got {arr.shape[0]}"
+        )  # fmt: skip
+        _raise_or_event(tree, ValueError(err_msg))
 
 
 # =================================================================================================
@@ -328,21 +312,16 @@ def _validate_shape(  # --------------------------------------------------------
     node: TraceNode, key: str, arr: np.ndarray, *, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
     """Validate shape and dtype stability for a dense key."""
-
     if key not in node._buffers or not node._buffers[key]:
         return
-
     prev = node._buffers[key][-1]
     if prev.shape != arr.shape or prev.dtype != arr.dtype:
         full_path = "/".join(path)
-        _raise_or_event(
-            tree,
-            ValueError(
-                "Shape/dtype mismatch at "
-                f"{full_path}: expected {prev.shape}/{prev.dtype}, "
-                f"got {arr.shape}/{arr.dtype}"
-            ),
-        )
+        err_msg = (
+            f"Shape/dtype mismatch at {full_path}: "
+            f"expected {prev.shape}/{prev.dtype}, got {arr.shape}/{arr.dtype}"
+        )  # fmt: skip
+        _raise_or_event(tree, ValueError(err_msg))
 
 
 # =================================================================================================
@@ -350,7 +329,6 @@ def _raise_or_event(  # --------------------------------------------------------
     tree: TraceTree, exc: Exception,
 ) -> None:  # fmt: skip
     """Raise in strict mode or swallow in lenient mode."""
-
     if tree.config.strict:
         raise exc
 
@@ -360,30 +338,23 @@ def _to_numeric_array(  # ------------------------------------------------------
     value: Any,
 ) -> Optional[np.ndarray]:  # fmt: skip
     """Convert a value to a numeric NumPy array if possible."""
-
     if value is None:
         return None
-
     if isinstance(value, Number):
         return np.asarray(value)
-
     if isinstance(value, np.ndarray):
         return value
-
     if hasattr(value, "detach") and callable(value.detach):
         try:
-            return value.detach().cpu().numpy()
+            return value.detach().cpu().numpy()  # type: ignore
         except Exception:
             return None
-
     try:
         arr = np.asarray(value)
     except Exception:
         return None
-
     if arr.dtype == object or not np.issubdtype(arr.dtype, np.number):
         return None
-
     return arr
 
 
@@ -392,7 +363,6 @@ def _is_list_of_numeric_arrays(  # ---------------------------------------------
     value: Any,
 ) -> bool:  # fmt: skip
     """Return True if value is a non-empty list/tuple of numeric arrays."""
-
     if not isinstance(value, (list, tuple)):
         return False
     if not value:
@@ -401,12 +371,11 @@ def _is_list_of_numeric_arrays(  # ---------------------------------------------
 
 
 # =================================================================================================
-def _is_dataclass_instance(  # --------------------------------------------------------------------
+def _is_mapping_instance(  # --------------------------------------------------------------------
     value: Any,
 ) -> bool:  # fmt: skip
-    """Return True for dataclass instances (not classes)."""
-
-    return is_dataclass(value) and not isinstance(value, type)
+    """Return True for mapping-like instances, excluding built-in types."""
+    return isinstance(value, MappingABC)
 
 
 # =================================================================================================
@@ -476,7 +445,6 @@ def _export_dense_node(  # -----------------------------------------------------
         if strict and indices != list(range(len(indices))):
             raise ValueError("Indexed children missing sequential indices")
         return [_export_dense_child(node.children[str(idx)], strict=strict) for idx in indices]
-
     exported: dict[str, Any] = {key: value for key, value in node.data.items()}
     for name, child in node.children.items():
         if name in exported:
@@ -601,7 +569,6 @@ def iter_nodes(  # -------------------------------------------------------------
     root: TraceNode,
 ) -> Iterator[TraceNode]:  # fmt: skip
     """Depth-first iteration over trace nodes."""
-
     stack = [root]
     while stack:
         node = stack.pop()

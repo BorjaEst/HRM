@@ -58,7 +58,7 @@ class RolloutLoop(Iterator[Tuple[int, StepContext]]):
         # t_rollout is 0-indexed, so the first batch corresponds to t=0
         t_rollout, batch = next(self.batch_iter)  # enumerated, returns t in first position
         options = {"allow_halt": True, "explore": True, "compute_targets": True}
-        outputs, carry, done = self.loss_head(batch, self.carry, t=t_rollout, **options)
+        outputs, carry, done = self.loss_head(batch, self.carry, **options)
         self.carry = carry
 
         # Check stop conditions after updating carry/state
@@ -110,7 +110,7 @@ class EvaluationLoop(Iterator[Tuple[int, StepContext]]):
         # t_rollout is 0-indexed, so the first batch corresponds to t=0
         t_rollout, batch = next(self.batch_iter)  # enumerated, returns t in first position
         options = {"allow_halt": True, "explore": False, "compute_targets": False}
-        outputs, carry, done = self.loss_head(batch, self.carry, t=t_rollout, **options)
+        outputs, carry, done = self.loss_head(batch, self.carry, **options)
         self.carry = carry
 
         # Check stop conditions after updating carry/state
