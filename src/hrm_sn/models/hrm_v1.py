@@ -32,12 +32,14 @@ from torchmetrics import MetricCollection
 
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.metrics import build_metrics, update_metrics_from_step
-from hrm_sn.modules.hrm import HRMConfig, HRModel
+from hrm_sn.modules.hrm import HRMConfig, HRModel, HRMState
+from hrm_sn.rollouts.collect import TraceCollector, TraceField, TraceGetter, TraceSpec, TraceValue
+from hrm_sn.rollouts.trace_tree import TraceTree
 from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
-from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop
+from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop, StepBatchSource, StepContext
 from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConfig, SequentialLR
 
 # TODO: Consider moving these aliases to `hrm_sn/types.py` once stabilized.
@@ -107,6 +109,45 @@ class ModelConfig_HRM_V1(BaseModel, extra="forbid"):
             "The per-device batch size is computed as `global_batch_size // world_size`."
         ),
     )  # TODO: consider moving to BufferSettings or similar
+
+
+# =================================================================================================
+class TraceFields:
+    """ """
+
+    @staticmethod
+    def get_model_loss(ctx: StepContext) -> TraceValue:
+        loss: Tensor = ctx.outputs.loss  # Scalar tensor
+        return loss.detach()  # Detach to avoid tracking gradients in the trace
+
+    @staticmethod
+    def get_model_halt_logits(ctx: StepContext) -> TraceValue:
+        halt_logits: Optional[Tensor] = ctx.carry.halt_logits  # Tensor of shape (batch_size,)
+        return halt_logits.detach() if halt_logits is not None else None
+
+    @staticmethod
+    def get_model_continue_logits(ctx: StepContext) -> TraceValue:
+        continue_logits: Optional[Tensor] = ctx.carry.continue_logits  # Tensor of shape (batch_size,)
+        return continue_logits.detach() if continue_logits is not None else None
+
+    @staticmethod
+    def get_model_steps(ctx: StepContext) -> TraceValue:
+        steps: Optional[Tensor] = ctx.carry.steps  # Tensor of shape (batch_size,)
+        return steps.detach() if steps is not None else None
+
+    @staticmethod
+    def get_model_state(ctx: StepContext) -> TraceValue:
+        s: HRMState = ctx.carry.model_state  # HRMState dataclass
+        return {"z_H": s.z_H, "z_L": s.z_L}
+
+    @classmethod
+    def get_all_fields(cls) -> List[TraceField[StepContext]]:
+        return [
+            TraceField(name="loss", get=cls.get_model_loss),
+            TraceField(name="halt_logits", get=cls.get_model_halt_logits),
+            TraceField(name="continue_logits", get=cls.get_model_continue_logits),
+            TraceField(name="steps", get=cls.get_model_steps),
+        ]
 
 
 # =================================================================================================
@@ -184,6 +225,7 @@ class Model(L.LightningModule):
         base_metrics = build_metrics()
         self.train_metrics = base_metrics.clone(prefix="train/")
         self.val_metrics = base_metrics.clone(prefix="val/")
+        self.trace_specs = TraceSpec(fields=TraceFields.get_all_fields())
 
         # Buffer + assembler implement partial-reset batching:
         # halted examples are "replaced" by new incoming rows, while continuing examples keep
@@ -329,7 +371,7 @@ class Model(L.LightningModule):
         step_batches = repeat(step_batch, 1)
 
         step = None
-        for step in RolloutLoop(self.loss_head, step_batches, carry0=self._train_carry):
+        for t, step in RolloutLoop(self.loss_head, step_batches, carry0=self._train_carry):
             pass  # TODO: Sum loss across steps if horizon > 1
         if step is None:
             raise ValueError("RolloutLoop did not yield any steps, cannot proceed with training step.")
@@ -348,7 +390,7 @@ class Model(L.LightningModule):
         for sch in scheduler if isinstance(scheduler, list) else [scheduler]:
             sch.step()  # type: ignore
 
-        update_metrics_from_step(self.train_metrics, step.metrics)
+        update_metrics_from_step(self.train_metrics, step.outputs.metrics)
         self.log_dict(self.train_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
         self.log("train/loss", loss.detach(), on_step=True, on_epoch=False, prog_bar=True, logger=True)
 
@@ -369,16 +411,16 @@ class Model(L.LightningModule):
         max_steps = self.config.act_controller.halt_max_steps
 
         # Initialize carry/state on the first batch
-        step = None
-        for step in EvaluationLoop(self.loss_head, step_batches, max_steps=max_steps):
-            pass  # TODO: Sum loss across steps?
+        step, collector = None, TraceCollector(TraceTree(), self.trace_specs)
+        for t, step in EvaluationLoop(self.loss_head, step_batches, max_steps=max_steps):
+            collector.append(t, step)
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
 
-        update_metrics_from_step(self.val_metrics, step.metrics)
+        update_metrics_from_step(self.val_metrics, step.outputs.metrics)
         self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        return {"set_name": set_name, "effective_bs": effective_bs}
+        return {"snapshot": collector, "effective_bs": effective_bs}
 
 
 # =================================================================================================
