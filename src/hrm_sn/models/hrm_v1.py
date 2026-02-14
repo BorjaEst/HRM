@@ -28,9 +28,10 @@ from adam_atan2_pytorch import AdamAtan2 as AdamATan2
 from pydantic import BaseModel, Field
 from torch import Tensor
 from torch.optim import Optimizer
+from torchmetrics import MetricCollection
 
-from hrm_sn import metrics
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
+from hrm_sn.metrics import build_metrics, update_metrics_from_step
 from hrm_sn.modules.hrm import HRMConfig, HRModel
 from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
@@ -179,6 +180,11 @@ class Model(L.LightningModule):
         self._train_carry = None
         self._val_carry = None
 
+        # Metrics are cloned for train/val to allow separate logging and state management.
+        base_metrics = build_metrics()
+        self.train_metrics = base_metrics.clone(prefix="train/")
+        self.val_metrics = base_metrics.clone(prefix="val/")
+
         # Buffer + assembler implement partial-reset batching:
         # halted examples are "replaced" by new incoming rows, while continuing examples keep
         # their state and may reuse buffered rows.
@@ -285,6 +291,13 @@ class Model(L.LightningModule):
         """
         self._train_carry = None
         self._train_buffer.clear()
+        self.train_metrics.reset()
+
+    def on_validation_epoch_start(  # ------------------------------------------------------------
+        self,
+    ) -> None:  # fmt: skip
+        """Reset validation metrics at the start of each epoch."""
+        self.val_metrics.reset()
 
     def training_step(  # -------------------------------------------------------------------------
         self, batch: Batch, batch_idx: int,

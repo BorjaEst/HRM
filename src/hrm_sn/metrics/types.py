@@ -10,6 +10,7 @@ class HaltedAgg:
     """Aggregates over sequences that halted on the current step."""
 
     halted_count: Tensor
+    eligible_count: Tensor
     accuracy_sum: Tensor
     exact_sum: Tensor
     steps_sum: Tensor
