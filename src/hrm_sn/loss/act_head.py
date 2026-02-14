@@ -79,7 +79,7 @@ class CorrectnessStats:
         """
         return self.loss_counts.clamp_min(1).unsqueeze(-1)
 
-    is_correct: Tensor  # Boolean tensor indicating which tokens were predicted correctly (after masking).
+    is_correct: Tensor  # Indicates which tokens were predicted correctly (after masking).
 
     @property
     def seq_is_correct(self) -> Tensor:
@@ -183,21 +183,15 @@ class ACTLossHead(nn.Module):
         return self.controller.initial_state(batch_sample)
 
     def forward(  # -------------------------------------------------------------------------------
-        self, batch: Batch, carry: ACTState, t: Optional[int]=None
+        self, batch: Batch, carry: ACTState, t: Optional[int]=None,
+        **options,
     ) -> ACTStepOutput:  # fmt: skip
         """Run one ACT step, returning the step loss, updated state, and metrics.
 
-        Training vs eval behavior:
-
-        - **Training**: allow halting, enable exploration, and compute controller targets
-          (e.g. continuation supervision).
-        - **Eval**: do not allow halting and do not compute targets; the loop/driver is
-          expected to manage termination and reporting separately.
+        Callers must provide explicit flags to control halting, exploration, and
+        target computation; evaluation may still allow halting.
         """
-        if self.training:
-            carry, outputs = self.controller.step(carry, batch, allow_halt=True, explore=True, compute_targets=True)
-        else:
-            carry, outputs = self.controller.step(carry, batch, allow_halt=False, explore=False, compute_targets=False)
+        carry, outputs = self.controller.step(carry, batch, **options)
         labels = carry.data["labels"]
 
         with torch.no_grad():
@@ -231,7 +225,8 @@ class ACTLossHead(nn.Module):
         logged accuracy and loss aligned with the ACT decision process (partial sequences
         still computing are excluded).
         """
-        halted_mask = state.halted & (stats.loss_counts > 0)  # (B,)
+        eligible_mask = stats.loss_counts > 0
+        halted_mask = state.halted & eligible_mask  # (B,)
         halted_weights = halted_mask.to(torch.float32)
 
         token_correct_per_seq = stats.is_correct.to(torch.float32).sum(-1)  # (B,)
@@ -247,7 +242,8 @@ class ACTLossHead(nn.Module):
             pred_continue = outputs.continue_logits >= 0  # (B,)
             q_continue_correct = pred_continue == stats.seq_is_correct  # (B,)
 
-        halted = self._build_halted_agg(state, stats, halted_mask, halted_weights, seq_accuracy, q_halt_correct, q_continue_correct)
+        eligible_count = eligible_mask.to(torch.float32).sum()
+        halted = self._build_halted_agg(state, stats, halted_mask, halted_weights, eligible_count, seq_accuracy, q_halt_correct, q_continue_correct)  # fmt: skip
         tokens = self._build_token_agg(token_correct_per_seq, token_count_per_seq, halted_weights)
         loss = self._build_loss_agg(losses, batch_size=outputs.logits.shape[0])
 
@@ -255,7 +251,8 @@ class ACTLossHead(nn.Module):
 
     def _build_halted_agg(  # --------------------------------------------------------------------
         self, state: ACTState, stats: CorrectnessStats, halted_mask: Tensor, halted_weights: Tensor,
-        seq_accuracy: Tensor, q_halt_correct: Tensor, q_continue_correct: Optional[Tensor]=None,
+        eligible_count: Tensor, seq_accuracy: Tensor, q_halt_correct: Tensor,
+        q_continue_correct: Optional[Tensor]=None,
     ) -> HaltedAgg:  # fmt: skip
         """Build aggregated metrics for halted sequences."""
         if q_continue_correct is None:
@@ -263,6 +260,7 @@ class ACTLossHead(nn.Module):
 
         return HaltedAgg(
             halted_count=halted_weights.sum(),
+            eligible_count=eligible_count,
             accuracy_sum=(seq_accuracy * halted_weights).sum(),
             exact_sum=(stats.seq_is_correct & halted_mask).to(torch.float32).sum(),
             steps_sum=(state.steps * halted_weights.to(state.steps.dtype)).sum(),
