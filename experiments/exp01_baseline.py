@@ -12,7 +12,6 @@ from pydantic_settings import BaseSettings, CliSettingsSource, PydanticBaseSetti
 
 from hrm_sn.callbacks.checkpoint import CheckpointCallback, CheckpointSettings
 from hrm_sn.callbacks.figures import FigureCallbackSettings, FiguresCallback
-from hrm_sn.callbacks.metrics import BulkMetricsLoggingCallback, MetricsCallbackSettings
 from hrm_sn.data.puzzle_datamodule import PuzzleDatamodule, PuzzleDatamoduleConfig
 from hrm_sn.data.puzzle_dataset import PuzzleDatasetSettings
 from hrm_sn.logging.tensorboard import Logger, LoggerSettings
@@ -152,10 +151,6 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         default_factory=FigureCallbackSettings,
         description="Figure generation callback settings.",
     )
-    metrics: Optional[MetricsCallbackSettings] = Field(
-        default_factory=MetricsCallbackSettings,
-        description="Metrics logging callback settings.",
-    )
 
     # ---------------------------------------------------------------------------------------------
     # Training control settings (passed as kwargs to Lightning Trainer)
@@ -237,8 +232,6 @@ if __name__ == "__main__":
         callbacks_list.append(CheckpointCallback(settings.checkpoint))
     if settings.figures is not None and settings.figures.enabled:
         callbacks_list.append(FiguresCallback(settings.figures))
-    if settings.metrics is not None and settings.metrics.enabled:
-        callbacks_list.append(BulkMetricsLoggingCallback(settings.metrics))
 
     # Step _: Build the PyTorch Lightning Trainer
     # This wires together logging, checkpointing, and training control
