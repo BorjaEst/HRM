@@ -335,10 +335,11 @@ class Model(L.LightningModule):
         for sch in scheduler if isinstance(scheduler, list) else [scheduler]:
             sch.step()  # type: ignore
 
-        metrics_raw = metrics.flatten_raw(step.metrics, prefix="train/")
-        metrics_raw = {key: value.detach() for key, value in metrics_raw.items()}
+        update_metrics_from_step(self.train_metrics, step.metrics)
+        self.log_dict(self.train_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        self.log("train/loss", loss.detach(), on_step=True, on_epoch=False, prog_bar=True, logger=True)
 
-        return {"loss": loss.detach(), "metrics": metrics_raw, "effective_bs": effective_bs}
+        return {"loss": loss.detach(), "effective_bs": effective_bs}
 
     def validation_step(  # -----------------------------------------------------------------------
         self, batch: Batch, batch_idx: int,
@@ -360,10 +361,11 @@ class Model(L.LightningModule):
             pass  # TODO: Sum loss across steps?
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
-        metrics_raw = metrics.flatten_raw(step.metrics, prefix=f"val/{set_name}/")
-        metrics_raw = {key: value.detach() for key, value in metrics_raw.items()}
 
-        return {"set_name": set_name, "metrics": metrics_raw, "effective_bs": effective_bs}
+        update_metrics_from_step(self.val_metrics, step.metrics)
+        self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        return {"set_name": set_name, "effective_bs": effective_bs}
 
 
 # =================================================================================================
