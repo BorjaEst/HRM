@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import tee
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Mapping, Optional, Tuple
 
 from torch import Tensor
 
@@ -12,17 +13,18 @@ StepBatchSource = Iterator[Batch]
 
 
 # =================================================================================================
-class RolloutLoop(Iterator[ACTStepOutput]):
-    """
-    Repeatedly calls loss_head(carry=..., batch=..., return_keys=...).
+@dataclass(frozen=True)
+class StepContext:
+    """ """
 
-    Batch inputs are provided by a step-batch source (iterator) and may optionally
-    accept carry updates via an ``update(carry=...)`` method.
+    batch: Mapping[str, Tensor]  # current step batch
+    carry: Any  # controller/model carry after step
+    outputs: Any  # controller outputs after step
 
-    Stop conditions:
-    - t reaches horizon (default 1)  => matches current training behavior
-    - optionally stop early if all_finish (useful for eval)
-    """
+
+# =================================================================================================
+class RolloutLoop(Iterator[Tuple[int, StepContext]]):
+    """ """
 
     def __init__(  # ------------------------------------------------------------------------------
         self, loss_head: ACTLossHead, batch: StepBatchSource,
@@ -49,27 +51,28 @@ class RolloutLoop(Iterator[ACTStepOutput]):
 
     def __next__(  # ------------------------------------------------------------------------------
         self,
-    ) -> ACTStepOutput:  # fmt: skip
+    ) -> Tuple[int, StepContext]:  # fmt: skip
         if self._done:  # Check if we've already stopped due to all_finished
             raise StopIteration
 
         # t_rollout is 0-indexed, so the first batch corresponds to t=0
         t_rollout, batch = next(self.batch_iter)  # enumerated, returns t in first position
         options = {"allow_halt": True, "explore": True, "compute_targets": True}
-        output: ACTStepOutput = self.loss_head(batch, self.carry, t=t_rollout, **options)
-        self.carry = output.carry
+        outputs, carry, done = self.loss_head(batch, self.carry, t=t_rollout, **options)
+        self.carry = carry
 
         # Check stop conditions after updating carry/state
-        if self.stop_on_all_finish and output.all_finished:
+        if self.stop_on_all_finish and done:
             self._done = True
         if t_rollout >= self.max_steps - 1:  # t_rollout is 0-indexed
             self._done = True
 
-        return output
+        context = StepContext(batch=batch, carry=carry, outputs=outputs)
+        return t_rollout, context
 
 
 # =================================================================================================
-class EvaluationLoop(Iterator[ACTStepOutput]):
+class EvaluationLoop(Iterator[Tuple[int, StepContext]]):
     """
     Convenience: initialize carry from batch, then run until all_finish.
     TODO: This is currently unused since eval also needs trace collection
@@ -100,20 +103,21 @@ class EvaluationLoop(Iterator[ACTStepOutput]):
 
     def __next__(  # ------------------------------------------------------------------------------
         self,
-    ) -> ACTStepOutput:  # fmt: skip
+    ) -> Tuple[int, StepContext]:  # fmt: skip
         if self._done:  # Check if we've already stopped due to all_finished
             raise StopIteration
 
         # t_rollout is 0-indexed, so the first batch corresponds to t=0
         t_rollout, batch = next(self.batch_iter)  # enumerated, returns t in first position
         options = {"allow_halt": True, "explore": False, "compute_targets": False}
-        output: ACTStepOutput = self.loss_head(batch, self.carry, t=t_rollout, **options)
-        self.carry = output.carry
+        outputs, carry, done = self.loss_head(batch, self.carry, t=t_rollout, **options)
+        self.carry = carry
 
         # Check stop conditions after updating carry/state
-        if self.stop_on_all_finish and output.all_finished:
+        if self.stop_on_all_finish and done:
             self._done = True
         if t_rollout >= self.max_steps - 1:  # t_rollout is 0-indexed
             self._done = True
 
-        return output
+        context = StepContext(batch=batch, carry=carry, outputs=outputs)
+        return t_rollout, context
