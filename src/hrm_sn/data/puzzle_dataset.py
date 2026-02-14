@@ -21,7 +21,7 @@ class PuzzleDatasetSettings(BaseModel):
         description="Path to the dataset directory containing `train/`, `test/`, etc. subdirectories.",
     )
     epochs_per_iter: int = Field(
-        1,
+        10,
         description="Epochs to iterate in each iteration. This is used to reduce overhead of randomization and shuffling.",
     )
 
