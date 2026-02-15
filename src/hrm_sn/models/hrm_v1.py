@@ -20,7 +20,7 @@ where `effective_bs` is used for distributed-safe normalization of loss/metrics.
 import math
 from dataclasses import dataclass
 from itertools import repeat
-from typing import Any, Dict, List, Optional, Tuple, TypeAlias
+from typing import Any, Dict, Iterable, List, Optional, Tuple, TypeAlias
 
 import lightning as L
 import torch
@@ -28,8 +28,8 @@ from adam_atan2_pytorch import AdamAtan2 as AdamATan2
 from pydantic import BaseModel, Field
 from torch import Tensor
 from torch.optim import Optimizer
-from torchmetrics import MetricCollection
 
+from hrm_sn.figures.utils.mazehard import O_ID
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.metrics import build_metrics, update_metrics_from_step
 from hrm_sn.modules.hrm import HRMConfig, HRModel, HRMState
@@ -122,27 +122,50 @@ class TraceFields:
 
     @staticmethod
     def get_model_halt_logits(ctx: StepContext) -> TraceValue:
-        halt_logits: Optional[Tensor] = ctx.outputs.outputs.halt_logits  # Tensor shape (B,)
-        return halt_logits.detach() if halt_logits is not None else None
+        halt_logits: Tensor = ctx.outputs.outputs.halt_logits  # Tensor shape (B,)
+        return halt_logits.detach()
 
     @staticmethod
     def get_model_continue_logits(ctx: StepContext) -> TraceValue:
-        continue_logits: Optional[Tensor] = ctx.outputs.outputs.continue_logits  # Tensor shape (B,)
-        return continue_logits.detach() if continue_logits is not None else None
+        continue_logits: Tensor = ctx.outputs.outputs.continue_logits  # Tensor shape (B,)
+        return continue_logits.detach()
 
     @staticmethod
     def get_model_steps(ctx: StepContext) -> TraceValue:
-        steps: Optional[Tensor] = ctx.carry.steps  # Tensor shape (B,)
-        return steps.detach() if steps is not None else None
+        steps: Tensor = ctx.carry.steps  # Tensor shape (B,)
+        return steps.detach()
 
-    @classmethod
-    def get_all_fields(cls) -> List[TraceField[StepContext]]:
-        return [
-            TraceField(name="loss", get=cls.get_model_loss),
-            TraceField(name="halt_logits", get=cls.get_model_halt_logits),
-            TraceField(name="continue_logits", get=cls.get_model_continue_logits),
-            TraceField(name="steps", get=cls.get_model_steps),
-        ]
+    @staticmethod
+    def get_act_halted(ctx: StepContext) -> TraceValue:
+        halted: Tensor = ctx.carry.halted
+        return halted.detach()
+
+    @staticmethod
+    def get_outputs(ctx: StepContext) -> TraceValue:
+        outputs: Any = ctx.outputs.outputs
+        return outputs.detach()
+
+    @staticmethod
+    def get_logits(ctx: StepContext) -> TraceValue:
+        logits: Tensor = ctx.outputs.outputs.logits
+        return logits.detach()
+
+    @staticmethod
+    def get_pred_is_o(ctx: StepContext) -> TraceValue:
+        pred: Tensor = torch.argmax(TraceFields.get_logits(ctx), dim=-1)  # type: ignore
+        return (pred == O_ID).to(torch.uint8).detach()
+
+
+# =================================================================================================
+def trace_fields() -> List[TraceField[StepContext]]:
+    return [
+        TraceField(name="loss", get=TraceFields.get_model_loss),
+        TraceField(name="halt_logits", get=TraceFields.get_model_halt_logits),
+        TraceField(name="continue_logits", get=TraceFields.get_model_continue_logits),
+        TraceField(name="steps", get=TraceFields.get_model_steps),
+        TraceField(name="act/halted", get=TraceFields.get_act_halted),
+        TraceField(name="pred/is_o", get=TraceFields.get_pred_is_o),
+    ]
 
 
 # =================================================================================================
@@ -220,7 +243,7 @@ class Model(L.LightningModule):
         base_metrics = build_metrics()
         self.train_metrics = base_metrics.clone(prefix="train/")
         self.val_metrics = base_metrics.clone(prefix="val/")
-        self.trace_specs = TraceSpec(fields=TraceFields.get_all_fields())
+        self.trace_specs = TraceSpec(fields=trace_fields())
 
         # Buffer + assembler implement partial-reset batching:
         # halted examples are "replaced" by new incoming rows, while continuing examples keep
@@ -412,9 +435,9 @@ class Model(L.LightningModule):
             collector.append(t, step)
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
-        vals = self.val_metrics.compute()  # Compute metrics based on accumulated state
 
         update_metrics_from_step(self.val_metrics, step.outputs.metrics)
+        vals = self.val_metrics.compute()  # Compute metrics based on accumulated state
         self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
         self.log("val/accuracy", vals["val/all/accuracy"], prog_bar=True, logger=True)
 

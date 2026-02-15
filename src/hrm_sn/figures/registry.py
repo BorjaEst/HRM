@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Optional, Sequence, Set, Union
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import matplotlib.figure as mpl_figure
 import pub_ready_plots as prp
@@ -40,7 +40,9 @@ class FigureSpec:
     name: str
     plot: Callable[[TraceTree, FigureContext], mpl_figure.Figure]
     default_filename: str
-    tags: Set[str] = field(default_factory=set)
+    tags: set[str] = field(default_factory=set)
+    trace_keys: set[str] = field(default_factory=set)
+    extras_keys: set[str] = field(default_factory=set)
     description: str = ""
 
 

@@ -49,7 +49,7 @@ class FigureCallbackSettings(BaseModel, extra="forbid"):
         description="Split to sample for figure generation.",
     )
     figures: List[str] = Field(
-        default_factory=lambda: ["dummy"],
+        default_factory=lambda: ["overlay"],
         description="Figure names to generate (from registry).",
     )
     save_pdf: bool = Field(
@@ -104,6 +104,9 @@ class FiguresCallback(pl.Callback):
         super().__init__()
         self.settings = settings
         self._captured_trace: Optional[TraceTree] = None
+        self._captured_extras: Optional[dict[str, object]] = None
+        self._required_trace_keys: set[str] = set()
+        self._required_extras_keys: set[str] = set()
         register.register_builtin_figures()  # Ensure built-in figure specs are registered.
         REGISTRY.validate(settings.figures)  # Fail fast on unknown figure names.
 
@@ -117,6 +120,11 @@ class FiguresCallback(pl.Callback):
         """
         if not self._should_capture(trainer, "validate"):
             return
+        self._required_trace_keys = self._required_trace_keys_union(self.settings.figures)
+        self._required_extras_keys = self._required_extras_keys_union(self.settings.figures)
+        set_keys = getattr(pl_module, "set_eval_trace_keys", None)
+        if callable(set_keys):
+            set_keys(self._required_trace_keys)
         self._reset_capture_state()
 
     def on_validation_batch_end(  # ---------------------------------------------------------------
@@ -140,6 +148,7 @@ class FiguresCallback(pl.Callback):
         if trace is None:
             return
         self._captured_trace = self._to_cpu_trace(trace)
+        self._captured_extras = self._extract_extras(batch)
 
     def on_validation_epoch_end(  # ---------------------------------------------------------------
         self, trainer: Trainer, pl_module: LightningModule,
@@ -188,6 +197,7 @@ class FiguresCallback(pl.Callback):
     ) -> None:  # fmt: skip
         """Clear any previously captured trace for the current epoch."""
         self._captured_trace = None
+        self._captured_extras = None
 
     def _dispatch_figures(  # ---------------------------------------------------------------------
         self, trainer: Trainer, figure_names: Iterable[str], context: FigureContext, trace: TraceTree
@@ -195,6 +205,8 @@ class FiguresCallback(pl.Callback):
         """Render and persist each figure listed in ``figure_names``."""
         for figure_name in figure_names:
             spec = REGISTRY.get(figure_name)
+            self._validate_trace_keys(trace, spec.trace_keys, figure_name)
+            self._validate_extras_keys(context.extras, spec.extras_keys, figure_name)
             self.generate_figure(trainer, trace, context, spec)
 
     def figure_context(  # ------------------------------------------------------------------------
@@ -210,8 +222,70 @@ class FiguresCallback(pl.Callback):
             freq_idx=self.settings.freq_idx,
             global_step=trainer.global_step,
             split_name=split_name,
-            extras={},
+            extras=self._captured_extras or {},
         )
+
+    def _required_trace_keys_union(  # ------------------------------------------------------------
+        self, names: Iterable[str],
+    ) -> set[str]:  # fmt: skip
+        keys: set[str] = set()
+        for name in names:
+            keys.update(REGISTRY.get(name).trace_keys)
+        return keys
+
+    def _required_extras_keys_union(  # -----------------------------------------------------------
+        self, names: Iterable[str],
+    ) -> set[str]:  # fmt: skip
+        keys: set[str] = set()
+        for name in names:
+            keys.update(REGISTRY.get(name).extras_keys)
+        return keys
+
+    def _extract_extras(  # -----------------------------------------------------------------------
+        self, batch: Any,
+    ) -> dict[str, object]:  # fmt: skip
+        if not self._required_extras_keys:
+            return {}
+        if not isinstance(batch, tuple) or len(batch) < 2:
+            return {}
+        batch_dict = batch[1]
+        if not isinstance(batch_dict, dict):
+            return {}
+        extras: dict[str, object] = {}
+        for key in self._required_extras_keys:
+            value = batch_dict.get(key)
+            if value is None:
+                continue
+            if torch.is_tensor(value):
+                extras[key] = value[:5].detach().cpu().numpy()
+            else:
+                extras[key] = value
+        return extras
+
+    def _validate_trace_keys(  # ------------------------------------------------------------------
+        self, trace: TraceTree, required: set[str], figure_name: str,
+    ) -> None:  # fmt: skip
+        if not required:
+            return
+        missing: list[str] = []
+        for path in sorted(required):
+            idx = trace.path_to_index.get(path) if trace.path_to_index else None
+            if idx is None:
+                missing.append(path)
+                continue
+            if not trace.leaf_is_numeric[idx]:
+                missing.append(path)
+        if missing:
+            raise ValueError(f"Figure '{figure_name}' missing required trace keys: {', '.join(missing)}")
+
+    def _validate_extras_keys(  # -----------------------------------------------------------------
+        self, extras: dict[str, Any], required: set[str], figure_name: str,
+    ) -> None:  # fmt: skip
+        if not required:
+            return
+        missing = [key for key in sorted(required) if key not in extras]
+        if missing:
+            raise ValueError(f"Figure '{figure_name}' missing required extras: {', '.join(missing)}")
 
     def _extract_trace(  # ------------------------------------------------------------------------
         self, outputs: Any,
