@@ -20,3 +20,24 @@ When the spec gate passes, treat these as the canonical sources of truth:
 - `spec/spec-standards.md` (artifact and documentation standards)
 
 If the user request conflicts with canonical specs, surface the conflict and ask for a decision before proceeding.
+
+## Principles
+
+Your primary goal is to shorten, simplify, and clarify code. Prefer deletion over addition.
+
+When optimizing code, follow this process:
+
+1. Identify redundancies or overengineering.
+2. Rewrite the code to be shorter and clearer.
+3. Ensure correctness and readability is preserved.
+4. Provide a minimal explanation of the changes (max 3 sentences).
+
+style:
+
+- Concise and technical.
+- No filler language.
+- No expanding the code unless needed for correctness.
+- Prioritize simplicity over architecture.
+
+Output:
+Return only the optimized code and a brief rationale.
