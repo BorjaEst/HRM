@@ -35,17 +35,11 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
 
     @classmethod
     def settings_customise_sources(  # ------------------------------------------------------------
-        cls, settings_cls: type[BaseSettings], init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource, dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings,
     ) -> Tuple[PydanticBaseSettingsSource, ...]:  # fmt: skip
-        return (
-            CliSettingsSource(settings_cls),
-            init_settings,
-            env_settings,
-            dotenv_settings,
-            file_secret_settings,
-        )
+        """ """
+        extra = [init_settings, env_settings, dotenv_settings, file_secret_settings]
+        return CliSettingsSource(settings_cls), *extra
 
     # ---------------------------------------------------------------------------------------------
     # Names and tracking
@@ -158,8 +152,12 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         default=20000,
         description="Maximum training steps.",
     )
+    log_every_n_steps: int = Field(
+        default=10,
+        description="Log metrics every N steps.",
+    )
     val_check_interval: int = Field(
-        default=100,
+        default=200,
         description="Validation check interval (in training steps).",
     )
     log_every_n_steps: int = Field(
@@ -172,7 +170,7 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     )
 
     # ---------------------------------------------------------------------------------------------
-    # Extra options for training control (e.g., resuming from checkpoint)
+    # Checkpointing and evaluation settings (passed as kwargs to Trainer and Checkpoint callback)
     checkpoint_path: Optional[str] = Field(
         default=None,
         description=(
@@ -184,12 +182,9 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         default=False,
         description="Whether to checkpoint the model after every evaluation.",
     )
-    eval_interval: Optional[int] = Field(
-        default=None,
-        description=(
-            "Number of epochs between evaluations. "
-            "If not set, it defaults to evaluating only at the end of training."
-        ),
+    limit_val_batches: int = Field(
+        default=10,
+        description="Cap validation to N batches per validation run.",
     )
     eval_save_outputs: List[str] = Field(
         default_factory=list,
@@ -236,13 +231,14 @@ if __name__ == "__main__":
     # Step _: Build the PyTorch Lightning Trainer
     # This wires together logging, checkpointing, and training control
     trainer = Trainer(
-        # TensorBoard logger for metrics and hyperparameters
+        # Callbacks and TensorBoard logger for metrics and hyperparameters
         logger=Logger(settings.logger) if settings.logger is not None else None,
-        # Callbacks: checkpointing + optional figure generation
         callbacks=callbacks_list if callbacks_list else None,
         # Lightning Trainer kwargs (extracted from config)
         max_steps=settings.max_steps,
         val_check_interval=settings.val_check_interval,
+        limit_val_batches=settings.limit_val_batches,
+        # Validation check every N steps (can also be set to a fraction for epoch-based checking)
         log_every_n_steps=settings.log_every_n_steps,
         enable_progress_bar=settings.enable_progress_bar,
     )
