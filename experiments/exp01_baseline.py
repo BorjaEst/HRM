@@ -160,10 +160,6 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
         default=200,
         description="Validation check interval (in training steps).",
     )
-    log_every_n_steps: int = Field(
-        default=10,
-        description="Log metrics every N steps.",
-    )
     enable_progress_bar: bool = Field(
         default=True,
         description="Show progress bar during training.",
