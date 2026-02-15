@@ -20,13 +20,11 @@ class TraceConfig:
     """Configuration for trace construction and validation.
 
     Attributes:
-        strict: Whether to raise errors on invariant violations.
-        global_paths: Paths treated as global (no batch axis enforced).
+        global_paths: Segment paths treated as global (no batch axis enforced).
         rebase_time_on_slice: Whether to rebase time to zero on slices.
     """
 
-    strict: bool = True
-    global_paths: set[str] = field(default_factory=set)
+    global_paths: set[tuple[str, ...]] = field(default_factory=set)
     rebase_time_on_slice: bool = True
 
 
@@ -39,6 +37,10 @@ class TraceNode:
     meta_static: dict[str, Any] = field(default_factory=dict)
     children: dict[str, "TraceNode"] = field(default_factory=dict)
     _buffers: dict[str, list[np.ndarray]] = field(default_factory=dict, repr=False)
+    _container_kind: Optional[str] = field(default=None, repr=False)
+    _kinds_by_key: dict[str, str] = field(default_factory=dict, repr=False)
+    _schema_keys: Optional[tuple[str, ...]] = field(default=None, repr=False)
+    _list_len: Optional[int] = field(default=None, repr=False)
 
     def child(  # ---------------------------------------------------------------------------------
         self, name: str,
@@ -55,17 +57,17 @@ class TraceNode:
         self._buffers.setdefault(key, []).append(value)
 
     def finalize(  # ------------------------------------------------------------------------------
-        self, *, length: int, strict: bool,
+        self, *, length: int,
     ) -> None:  # fmt: skip
         """Stack buffered data into dense arrays and recurse into children."""
         for key, values in self._buffers.items():
-            if strict and len(values) != length:
+            if len(values) != length:
                 err_msg = f"Incomplete data buffer for key {key!r}: expected {length}, got {len(values)}"
                 raise ValueError(err_msg)
             self.data[key] = np.stack(values, axis=0)
         self._buffers.clear()
         for child in self.children.values():
-            child.finalize(length=length, strict=strict)
+            child.finalize(length=length)
 
     def slice_time(  # ----------------------------------------------------------------------------
         self, t0: int, t1: int, *, rebase: bool,
@@ -75,6 +77,10 @@ class TraceNode:
         for key, arr in self.data.items():
             sliced.data[key] = arr[t0:t1]
         sliced.meta_static = dict(self.meta_static)
+        sliced._container_kind = self._container_kind
+        sliced._kinds_by_key = dict(self._kinds_by_key)
+        sliced._schema_keys = self._schema_keys
+        sliced._list_len = self._list_len
         for name, child in self.children.items():
             sliced.children[name] = child.slice_time(t0, t1, rebase=rebase)
         return sliced
@@ -89,20 +95,22 @@ class TraceTree:
     root: TraceNode = field(default_factory=TraceNode)
     batch_size: Optional[int] = None
     length: int = 0
+    leaf_signatures: dict[tuple[str, ...], tuple[tuple[int, ...], np.dtype]] = field(
+        default_factory=dict,
+    )
 
     def append(  # --------------------------------------------------------------------------------
         self, state: Any,
     ) -> None:  # fmt: skip
         """Append a state snapshot into the trace tree."""
-        t = self.length
-        _append_state(node=self.root, state=state, t=t, path=(), tree=self)
+        _append_node(node=self.root, value=state, path=(), tree=self)
         self.length += 1
 
     def finalize(  # ------------------------------------------------------------------------------
         self,
     ) -> None:  # fmt: skip
         """Finalize the trace by stacking buffered data into arrays."""
-        self.root.finalize(length=self.length, strict=self.config.strict)
+        self.root.finalize(length=self.length)
 
     def slice_time(  # ----------------------------------------------------------------------------
         self, t0: int, t1: int,
@@ -114,6 +122,7 @@ class TraceTree:
         sliced.root = self.root.slice_time(t0, t1, rebase=self.config.rebase_time_on_slice)
         sliced.length = max(0, t1 - t0)
         sliced.batch_size = self.batch_size
+        sliced.leaf_signatures = dict(self.leaf_signatures)
         return sliced
 
     def node(  # ----------------------------------------------------------------------------------
@@ -135,19 +144,19 @@ class TraceTree:
         """
         node_path, key = _split_path(path)
         node = _get_node(self.root, node_path)
-        return _resolve_dense_value(node, key, strict=self.config.strict)
+        return _resolve_dense_value(node, key)
 
     def export_dense_tree(  # ---------------------------------------------------------------------
         self,
     ) -> Any:  # fmt: skip
         """Export dense trace data as a nested dict/list pytree."""
-        return _export_dense_node(self.root, strict=self.config.strict)
+        return _export_dense_node(self.root)
 
     def export_meta_tree(  # ----------------------------------------------------------------------
         self,
-    ) -> dict[str, Any]:  # fmt: skip
-        """Export static metadata as a nested dict tree."""
-        return _export_meta_node(self.root, strict=self.config.strict)
+    ) -> Any:  # fmt: skip
+        """Export static metadata as a nested dict/list tree."""
+        return _export_meta_node(self.root)
 
     def export(  # --------------------------------------------------------------------------------
         self, *, flatten: bool = False, sep: str = "/",
@@ -194,10 +203,12 @@ class TraceTree:
     ) -> int:  # fmt: skip
         """Return number of indexed children at a multiscale path."""
         node = self.node(base_path)
-        if _is_indexed_children(node.children):
-            return len(_sorted_indices(node.children.keys()))
-        if _is_indexed_data(node.data):
-            return len(_sorted_indices(node.data.keys()))
+        if node._container_kind == "list" and node._list_len is not None:
+            return node._list_len
+        if node.children and all(key.isdigit() for key in node.children.keys()):
+            return len(node.children)
+        if node.data and all(key.isdigit() for key in node.data.keys()):
+            return len(node.data)
         return 0
 
     def validate_env_idx(  # ----------------------------------------------------------------------
@@ -220,117 +231,139 @@ class TraceTree:
 
 
 # =================================================================================================
-def _append_state(  # -----------------------------------------------------------------------------
-    *, node: TraceNode, state: Any, t: int, path: tuple[str, ...], tree: TraceTree,
+def _append_node(  # -----------------------------------------------------------------------------
+    *, node: TraceNode, value: Any, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
-    """Append a state tree into the trace tree (recursive)."""
-    if _is_mapping_instance(state):
-        if tree.config.strict:
-            keys = tuple(sorted(str(k) for k in state.keys()))
-            prev = node.meta_static.get("_schema_keys")
-            if prev is None:
-                node.meta_static["_schema_keys"] = keys
-            elif prev != keys:
-                full_path = "/".join(path) or "<root>"
-                raise ValueError(f"Schema keys changed at {full_path}: {prev} -> {keys}")
-        for key, value in state.items():
-            _append_value(node=node, name=key, value=value, t=t, path=path, tree=tree)
+    """Append a container node (mapping/list) into the trace tree."""
+    if isinstance(value, MappingABC):
+        if node._container_kind is None:
+            node._container_kind = "dict"
+        elif node._container_kind != "dict":
+            err_msg = f"Container kind changed at {_path_str(path)}: {node._container_kind} -> dict"
+            raise ValueError(err_msg)
+        keys = tuple(sorted(str(k) for k in value.keys()))
+        if node._schema_keys is None:
+            node._schema_keys = keys
+        elif node._schema_keys != keys:
+            err_msg = f"Schema keys changed at {_path_str(path)}: {node._schema_keys} -> {keys}"
+            raise ValueError(err_msg)
+        for key, child in value.items():
+            _append_entry(node, str(key), child, path + (str(key),), tree)
+        return
+    if isinstance(value, (list, tuple)):
+        if node._container_kind is None:
+            node._container_kind = "list"
+        elif node._container_kind != "list":
+            err_msg = f"Container kind changed at {_path_str(path)}: {node._container_kind} -> list"
+            raise ValueError(err_msg)
+        length = len(value)
+        if node._list_len is None:
+            node._list_len = length
+        elif node._list_len != length:
+            err_msg = f"List length changed at {_path_str(path)}: {node._list_len} -> {length}"
+            raise ValueError(err_msg)
+        for idx, child in enumerate(value):
+            _append_entry(node, str(idx), child, path + (str(idx),), tree)
         return
     raise TypeError(
-        "State must be a mapping-like instance. "
-        f"Got {type(state)!r} at path {"/".join(path) or "<root>"}."
+        "State must be a mapping or list/tuple container. "
+        f"Got {type(value)!r} at path {_path_str(path)}."
     )
 
 
 # =================================================================================================
-def _append_value(  # -----------------------------------------------------------------------------
-    *, node: TraceNode, name: str, value: Any, t: int, path: tuple[str, ...], tree: TraceTree,
+def _append_entry(  # ----------------------------------------------------------------------------
+    node: TraceNode, key: str, value: Any, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
-    """Append a single field value into the trace tree."""
-    current_path = path + (name,)
-    if _is_mapping_instance(value):
-        child = node.child(name)
-        _append_state(node=child, state=value, t=t, path=current_path, tree=tree)
+    """Append a single key/value under a container node."""
+    is_mapping = isinstance(value, MappingABC)
+    is_list = isinstance(value, (list, tuple))
+    arr = None if (is_mapping or is_list) else _to_numeric_array(value)
+    if is_mapping or is_list:
+        entry_kind = "container"
+    elif arr is not None:
+        entry_kind = "leaf_numeric"
+    else:
+        entry_kind = "leaf_meta"
+
+    prev_kind = node._kinds_by_key.get(key)
+    if prev_kind is None:
+        node._kinds_by_key[key] = entry_kind
+    elif prev_kind != entry_kind:
+        raise ValueError(f"Key kind changed at {_path_str(path)}: {prev_kind} -> {entry_kind}")
+
+    if is_mapping or is_list:
+        child = node.child(key)
+        _append_node(node=child, value=value, path=path, tree=tree)
         return
-    if _is_list_of_numeric_arrays(value):
-        container = node.child(name)
-        container.meta_static.setdefault("length", len(value))
-        for idx, elem in enumerate(value):
-            arr = _to_numeric_array(elem)
-            if arr is None:
-                if tree.config.strict:
-                    full_path = "/".join(current_path + (str(idx),))
-                    raise ValueError(f"Non-numeric list element at {full_path}")
-                continue
-            options = {"key": str(idx), "arr": arr, "t": t, "tree": tree}
-            _append_dense(node=container, key=str(idx), path=current_path + (str(idx),), **options)
-        return
-    arr = _to_numeric_array(value)
     if arr is not None:
-        _append_dense(node=node, key=name, arr=arr, t=t, path=current_path, tree=tree)
+        _append_leaf_numeric(node=node, key=key, arr=arr, path=path, tree=tree)
         return
-    _record_static_meta(node, name, value, strict=tree.config.strict)
+    _record_static_meta(node, key, value)
 
 
 # =================================================================================================
-def _append_dense(  # -----------------------------------------------------------------------------
-    *, node: TraceNode, key: str, arr: np.ndarray, t: int, path: tuple[str, ...], tree: TraceTree,
+def _append_leaf_numeric(  # ---------------------------------------------------------------------
+    *, node: TraceNode, key: str, arr: np.ndarray, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
-    """Append a dense numeric array with validation."""
+    """Append a numeric leaf with batch and signature invariants."""
     if arr.dtype == object:
-        if tree.config.strict:
-            raise ValueError(f"Irregular value for key {key!r} at t={t}")
-        return
-    _validate_batch(arr, path=path, tree=tree)
-    _validate_shape(node, key, arr, path=path, tree=tree)
+        raise ValueError(f"Irregular value for key {key!r} at {_path_str(path)}")
+    is_global = _is_global_path(path, global_paths=tree.config.global_paths)
+    if not is_global:
+        _enforce_batch_axis(arr, path=path, tree=tree)
+    _enforce_signature(arr, path=path, tree=tree, is_global=is_global)
     node.append_data(key, arr)
 
 
 # =================================================================================================
-def _validate_batch(  # ---------------------------------------------------------------------------
+def _enforce_batch_axis(  # ----------------------------------------------------------------------
     arr: np.ndarray, *, path: tuple[str, ...], tree: TraceTree,
 ) -> None:  # fmt: skip
-    """Validate or set the batch size for batched arrays."""
+    """Enforce batch-axis stability for non-global numeric leaves."""
     if arr.ndim == 0:
-        return
-    full_path = "/".join(path)
-    if full_path in tree.config.global_paths:
         return
     if tree.batch_size is None:
         tree.batch_size = int(arr.shape[0])
         return
     if int(arr.shape[0]) != tree.batch_size:
-        err_msg = (
-            f"Batch size mismatch at {full_path}: "
+        raise ValueError(
+            f"Batch size mismatch at {_path_str(path)}: "
             f"expected {tree.batch_size}, got {arr.shape[0]}"
-        )  # fmt: skip
-        _raise_or_event(tree, ValueError(err_msg))
+        )
 
 
 # =================================================================================================
-def _validate_shape(  # ---------------------------------------------------------------------------
-    node: TraceNode, key: str, arr: np.ndarray, *, path: tuple[str, ...], tree: TraceTree,
+def _enforce_signature(  # -----------------------------------------------------------------------
+    arr: np.ndarray, *, path: tuple[str, ...], tree: TraceTree, is_global: bool = False,
 ) -> None:  # fmt: skip
-    """Validate shape and dtype stability for a dense key."""
-    if key not in node._buffers or not node._buffers[key]:
+    """Enforce first-seen shape/dtype signature for numeric leaves."""
+    if is_global:
+        shape_sig = tuple(arr.shape)
+    elif arr.ndim == 0:
+        shape_sig = ()
+    else:
+        shape_sig = tuple(arr.shape[1:])
+    sig = (shape_sig, arr.dtype)
+    prev = tree.leaf_signatures.get(path)
+    if prev is None:
+        tree.leaf_signatures[path] = sig
         return
-    prev = node._buffers[key][-1]
-    if prev.shape != arr.shape or prev.dtype != arr.dtype:
-        full_path = "/".join(path)
-        err_msg = (
-            f"Shape/dtype mismatch at {full_path}: "
-            f"expected {prev.shape}/{prev.dtype}, got {arr.shape}/{arr.dtype}"
-        )  # fmt: skip
-        _raise_or_event(tree, ValueError(err_msg))
+    if prev != sig:
+        raise ValueError(f"Shape/dtype mismatch at {_path_str(path)}: expected {prev}, got {sig}")
 
 
 # =================================================================================================
-def _raise_or_event(  # ---------------------------------------------------------------------------
-    tree: TraceTree, exc: Exception,
-) -> None:  # fmt: skip
-    """Raise in strict mode or swallow in lenient mode."""
-    if tree.config.strict:
-        raise exc
+def _is_global_path(  # --------------------------------------------------------------------------
+    path: tuple[str, ...], *, global_paths: set[tuple[str, ...]],
+) -> bool:  # fmt: skip
+    """Return True if any prefix of path is marked as global."""
+    if not global_paths:
+        return False
+    for i in range(1, len(path) + 1):
+        if path[:i] in global_paths:
+            return True
+    return False
 
 
 # =================================================================================================
@@ -339,6 +372,8 @@ def _to_numeric_array(  # ------------------------------------------------------
 ) -> Optional[np.ndarray]:  # fmt: skip
     """Convert a value to a numeric NumPy array if possible."""
     if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
         return None
     if isinstance(value, Number):
         return np.asarray(value)
@@ -359,23 +394,11 @@ def _to_numeric_array(  # ------------------------------------------------------
 
 
 # =================================================================================================
-def _is_list_of_numeric_arrays(  # ----------------------------------------------------------------
-    value: Any,
-) -> bool:  # fmt: skip
-    """Return True if value is a non-empty list/tuple of numeric arrays."""
-    if not isinstance(value, (list, tuple)):
-        return False
-    if not value:
-        return False
-    return all(_to_numeric_array(item) is not None for item in value)
-
-
-# =================================================================================================
-def _is_mapping_instance(  # --------------------------------------------------------------------
-    value: Any,
-) -> bool:  # fmt: skip
-    """Return True for mapping-like instances, excluding built-in types."""
-    return isinstance(value, MappingABC)
+def _path_str(  # ---------------------------------------------------------------------------------
+    path: tuple[str, ...],
+) -> str:  # fmt: skip
+    """Return a readable path string for error messages."""
+    return "/".join(path) or "<root>"
 
 
 # =================================================================================================
@@ -415,12 +438,12 @@ def _get_node(  # --------------------------------------------------------------
 
 # =================================================================================================
 def _resolve_dense_value(  # ----------------------------------------------------------------------
-    node: TraceNode, key: str, *, strict: bool,
+    node: TraceNode, key: str,
 ) -> np.ndarray:  # fmt: skip
     """Resolve a dense value from a node by key."""
     has_child = key in node.children
     has_data = key in node.data
-    if has_child and has_data and strict:
+    if has_child and has_data:
         raise ValueError(f"Dense key '{key}' conflicts with child node")
     if has_data:
         return node.data[key]
@@ -431,53 +454,60 @@ def _resolve_dense_value(  # ---------------------------------------------------
 
 # =================================================================================================
 def _export_dense_node(  # ------------------------------------------------------------------------
-    node: TraceNode, *, strict: bool,
+    node: TraceNode,
 ) -> Any:  # fmt: skip
     """Export dense data for a node into a nested dict/list pytree."""
-    _validate_child_data_conflicts(node, strict=strict)
-    if _is_indexed_data(node.data) and not node.children:
-        indices = _sorted_indices(node.data.keys())
-        if strict and indices != list(range(len(indices))):
-            raise ValueError("Indexed data keys missing sequential indices")
-        return [node.data[str(idx)] for idx in indices]
-    if _is_indexed_children(node.children) and not node.data:
-        indices = _sorted_indices(node.children.keys())
-        if strict and indices != list(range(len(indices))):
-            raise ValueError("Indexed children missing sequential indices")
-        return [_export_dense_child(node.children[str(idx)], strict=strict) for idx in indices]
+    if node._container_kind == "list":
+        if node._list_len is None:
+            raise ValueError("List container missing length metadata")
+        exported_list: list[Any] = []
+        for idx in range(node._list_len):
+            key = str(idx)
+            if key in node.data:
+                exported_list.append(node.data[key])
+            elif key in node.children:
+                exported_list.append(_export_dense_node(node.children[key]))
+            else:
+                exported_list.append(None)
+        return exported_list
+
     exported: dict[str, Any] = {key: value for key, value in node.data.items()}
     for name, child in node.children.items():
         if name in exported:
-            if strict:
-                raise ValueError(f"Child/data conflict at key '{name}'")
-            continue
-        exported[name] = _export_dense_child(child, strict=strict)
+            raise ValueError(f"Child/data conflict at key '{name}'")
+        exported[name] = _export_dense_node(child)
     return exported
 
 
 # =================================================================================================
-def _export_dense_child(  # -----------------------------------------------------------------------
-    node: TraceNode, *, strict: bool,
-) -> Any:  # fmt: skip
-    """Export a child node."""
-    return _export_dense_node(node, strict=strict)
-
-
-# =================================================================================================
 def _export_meta_node(  # -------------------------------------------------------------------------
-    node: TraceNode, *, strict: bool,
-) -> dict[str, Any]:  # fmt: skip
-    """Export static metadata into a nested dict tree with __meta__ keys."""
-    _validate_child_data_conflicts(node, strict=strict)
+    node: TraceNode,
+) -> Any:  # fmt: skip
+    """Export static metadata into a nested dict/list tree."""
+    if node._container_kind == "list":
+        if node._list_len is None:
+            raise ValueError("List container missing length metadata")
+        exported_list: list[Any] = []
+        for idx in range(node._list_len):
+            key = str(idx)
+            if key in node.children:
+                exported_list.append(_export_meta_node(node.children[key]))
+            elif key in node.meta_static:
+                exported_list.append(node.meta_static[key])
+            else:
+                exported_list.append(None)
+        return exported_list
+
     exported: dict[str, Any] = {}
-    if node.meta_static:
-        exported["__meta__"] = dict(node.meta_static)
-    for name, child in node.children.items():
-        if name in node.data:
-            if strict:
-                raise ValueError(f"Child/data conflict at key '{name}'")
+    keys = set(node.meta_static.keys()) | set(node.children.keys()) | set(node.data.keys())
+    for name in sorted(keys):
+        if name in node.children:
+            exported[name] = _export_meta_node(node.children[name])
             continue
-        exported[name] = _export_meta_node(child, strict=strict)
+        if name in node.meta_static:
+            exported[name] = node.meta_static[name]
+            continue
+        exported[name] = None
     return exported
 
 
@@ -489,10 +519,10 @@ def flatten_pytree(  # ---------------------------------------------------------
     flattened: dict[str, np.ndarray] = {}
 
     def _walk(value: Any, prefix: str) -> None:
+        if value is None:
+            return
         if isinstance(value, dict):
             for key, child in value.items():
-                if key == "__meta__":
-                    continue
                 next_prefix = f"{prefix}{sep}{key}" if prefix else key
                 _walk(child, next_prefix)
             return
@@ -507,59 +537,11 @@ def flatten_pytree(  # ---------------------------------------------------------
     return flattened
 
 
-# =================================================================================================
-def _is_indexed_children(  # ----------------------------------------------------------------------
-    children: dict[str, TraceNode],
-) -> bool:  # fmt: skip
-    """Return True if all children keys are numeric strings."""
-    if not children:
-        return False
-    return all(key.isdigit() for key in children.keys())
-
-
-# =================================================================================================
-def _is_indexed_data(  # --------------------------------------------------------------------------
-    data: dict[str, np.ndarray],
-) -> bool:  # fmt: skip
-    """Return True if all data keys are numeric strings."""
-    if not data:
-        return False
-    return all(key.isdigit() for key in data.keys())
-
-
-# =================================================================================================
-def _sorted_indices(  # ---------------------------------------------------------------------------
-    keys: Iterable[str],
-) -> list[int]:  # fmt: skip
-    """Return numeric indices sorted ascending."""
-    indices = []
-    for key in keys:
-        try:
-            indices.append(int(key))
-        except ValueError:
-            continue
-    return sorted(indices)
-
-
-# =================================================================================================
-def _validate_child_data_conflicts(  # ------------------------------------------------------------
-    node: TraceNode, *, strict: bool,
-) -> None:  # fmt: skip
-    """Validate that no child name conflicts with dense data keys."""
-    conflicts = set(node.children.keys()) & set(node.data.keys())
-    if conflicts and strict:
-        joined = ", ".join(sorted(conflicts))
-        raise ValueError(f"Child/data conflict at keys: {joined}")
-
-
-# =================================================================================================
 def _record_static_meta(  # -----------------------------------------------------------------------
-    node: TraceNode, key: str, value: Any, *, strict: bool,
+    node: TraceNode, key: str, value: Any,
 ) -> None:  # fmt: skip
-    """Record static metadata, rejecting changes in strict mode."""
+    """Record static metadata (first-write wins)."""
     if key in node.meta_static:
-        if node.meta_static[key] != value and strict:
-            raise ValueError(f"Metadata value changed for key '{key}'")
         return
     node.meta_static[key] = value
 
