@@ -213,7 +213,9 @@ class FiguresCallback(pl.Callback):
             extras={},
         )
 
-    def _extract_trace(self, outputs: Any) -> Optional[TraceTree]:
+    def _extract_trace(  # ------------------------------------------------------------------------
+        self, outputs: Any,
+    ) -> Optional[TraceTree]:  # fmt: skip
         """Extract a :class:`~hrm_sn.rollouts.trace_tree.TraceTree` from ``outputs``.
 
         Supports common Lightning return conventions:
@@ -230,7 +232,9 @@ class FiguresCallback(pl.Callback):
 
         return None
 
-    def _to_cpu_trace(self, trace: TraceTree) -> TraceTree:
+    def _to_cpu_trace(  # -------------------------------------------------------------------------
+        self, trace: TraceTree,
+    ) -> TraceTree:  # fmt: skip
         """Normalize trace storage to CPU-backed arrays.
 
         The trace is finalized first, then any dense tensor leaves are detached
