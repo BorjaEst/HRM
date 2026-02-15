@@ -418,7 +418,7 @@ class Model(L.LightningModule):
         self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
         self.log("val/accuracy", vals["val/all/accuracy"], prog_bar=True, logger=True)
 
-        return {"snapshot": collector, "effective_bs": effective_bs}
+        return {"trace": collector.tree, "effective_bs": effective_bs}
 
 
 # =================================================================================================
