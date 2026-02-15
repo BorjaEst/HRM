@@ -386,7 +386,8 @@ class Model(L.LightningModule):
             sch.step()  # type: ignore
 
         update_metrics_from_step(self.train_metrics, step.outputs.metrics)
-        self.log_dict(self.train_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        if (self.global_step + 1) % self.trainer.log_every_n_steps == 0:  # type: ignore
+            self.log_dict(self.train_metrics.compute(), on_step=True, on_epoch=False, logger=True)
         self.log("train/loss", loss.detach(), on_step=True, on_epoch=False, prog_bar=True, logger=True)
 
         return {"loss": loss.detach(), "effective_bs": effective_bs}
@@ -411,9 +412,11 @@ class Model(L.LightningModule):
             collector.append(t, step)
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
+        vals = self.val_metrics.compute()  # Compute metrics based on accumulated state
 
         update_metrics_from_step(self.val_metrics, step.outputs.metrics)
-        self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        self.log("val/accuracy", vals["val/all/accuracy"], prog_bar=True, logger=True)
 
         return {"snapshot": collector, "effective_bs": effective_bs}
 
