@@ -1,11 +1,12 @@
 from torchmetrics import MetricCollection
 
 from hrm_sn.metrics.adapter import update_metrics_from_step
-from hrm_sn.metrics.torchmetrics import RatioMetric
+from hrm_sn.metrics.torchmetrics import LastRatioMetric, RatioMetric
 from hrm_sn.metrics.types import HaltedAgg, LossAgg, StepMetrics, TokenAgg
 
 __all__ = [
     "RatioMetric",
+    "LastRatioMetric",
     "HaltedAgg",
     "LossAgg",
     "StepMetrics",
@@ -19,13 +20,13 @@ def build_metrics() -> MetricCollection:
     """Construct a MetricCollection with all HRM metrics."""
     return MetricCollection(
         {
-            "all/accuracy": RatioMetric(),
-            "halted/rate": RatioMetric(),
-            "halted/avg_steps": RatioMetric(),
-            "tokens/accuracy": RatioMetric(),
-            "loss/lm": RatioMetric(),
-            "loss/q_halt": RatioMetric(),
-            "loss/q_continue": RatioMetric(),
+            "all/accuracy": LastRatioMetric(),
+            "halted/rate": LastRatioMetric(),
+            "halted/avg_steps": LastRatioMetric(),
+            "tokens/accuracy": LastRatioMetric(),
+            "loss/lm": LastRatioMetric(),
+            "loss/q_halt": LastRatioMetric(),
+            "loss/q_continue": LastRatioMetric(),
         },
         prefix=None,
         postfix=None,
