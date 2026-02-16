@@ -1,37 +1,75 @@
-"""MazeHard paper figure: 5 samples with GT vs model overlays."""
+"""MazeHard figure: ground-truth vs model overlays.
+
+This module renders a two-row panel where each column corresponds to one maze
+example:
+
+- Row 1 (**Ground truth**): input maze with a mask derived from labels.
+- Row 2 (**Model**): input maze with a mask taken from the model prediction at
+    the sample's first halt step.
+
+Data requirements
+-----------------
+
+`FigureContext.extras` must provide:
+
+- ``inputs``: array-like of shape ``[B, N]`` (flattened grid tokens)
+- ``labels``: array-like of shape ``[B, N]`` (flattened target tokens)
+
+The rollout `TraceTree` must provide:
+
+- ``act/halted``: array-like of shape ``[T, B]`` (boolean-like)
+- ``pred/is_o``: array-like of shape ``[T, B, N]`` (model overlay score / probability)
+
+Notes
+-----
+
+- The displayed batch size is controlled by :attr:`OverlayFigure.N_MAZES`
+    (default: 6 columns).
+- For each sample ``b``, the model overlay is taken at
+    ``t_halt = first_halt_index(halted[:, b])``.
+"""
 
 from __future__ import annotations
 
-from typing import Any
-
-import matplotlib.pyplot as plt
 import numpy as np
-import pub_ready_plots as prp
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from hrm_sn.data.maze_vocab import O_ID
 from hrm_sn.figures.figures.base import BaseFigureTemplate
-from hrm_sn.figures.figures.panels import colorbar, panel
+from hrm_sn.figures.figures.panels import panel
 from hrm_sn.figures.plots.mazehard import plot_maze_with_overlay
 from hrm_sn.figures.registry import FigureContext
+from hrm_sn.figures.utils.axes import subdivide_axes
 from hrm_sn.figures.utils.mazehard import first_halt_index, reshape_grid
 from hrm_sn.rollouts.trace_tree import TraceTree
 
 
 def plot(trace: TraceTree, ctx: FigureContext) -> Figure:
-    """ """
+    """Entry point used by the figure registry.
+
+    Args:
+        trace: Rollout trace containing predictions and halting signals.
+        ctx: Figure context carrying extras like inputs/labels.
+
+    Returns:
+        A matplotlib `Figure`.
+    """
     return OverlayFigure(trace, ctx).plot()
 
 
 class OverlayFigure(BaseFigureTemplate):
-    """ """
+    """Figure template that plots GT overlays above model overlays.
 
-    HEIGHT_FRAC: float = 0.25
-    MOSAIC = [
-        ["map_a1", "map_a2", "map_a3", "map_a4", "map_a5"],
-        ["map_b1", "map_b2", "map_b3", "map_b4", "map_b5"],
-    ]
+    The layout is controlled by `MOSAIC`, with `labels_maps` on the first row and
+    `solutions_maps` on the second row.
+    """
+
+    HEIGHT_FRAC: float = 0.24
+    MOSAIC = [["labels_maps"], ["solutions_maps"]]
+    # Keep this in sync with the batch dimension expected by trace keys and
+    # the number of samples pulled from `ctx.extras`.
+    N_MAZES: int = 6
 
     def __init__(self, trace: TraceTree, ctx: FigureContext) -> None:
         super().__init__(trace, ctx)
@@ -39,83 +77,73 @@ class OverlayFigure(BaseFigureTemplate):
         self.gt_overlays = _select_gt_overlays(self.labels)
         self.model_overlays = _select_model_overlays(trace)
 
+    @panel()
+    def labels_maps(self, ax: Axes) -> None:
+        """Plot the top row: ground-truth overlay masks."""
+        axs = subdivide_axes(ax, nrows=1, ncols=self.N_MAZES)
+        for row, ax_i in enumerate(axs.ravel()):
+            self._plot_label_map(ax_i, row=row)
+
     def _plot_label_map(self, ax: Axes, row: int) -> None:
         input_grid = reshape_grid(self.inputs[row])
         gt_grid = reshape_grid(self.gt_overlays[row])
         plot_maze_with_overlay(ax, input_grid, gt_grid)
 
-    @panel()  # FIXME: We need to add args to define the panel or so
-    def map_a1(self, ax: Axes) -> None:
-        self._plot_label_map(ax, row=0)
-
     @panel()
-    def map_a2(self, ax: Axes) -> None:
-        self._plot_label_map(ax, row=1)
-
-    @panel()
-    def map_a3(self, ax: Axes) -> None:
-        self._plot_label_map(ax, row=2)
-
-    @panel()
-    def map_a4(self, ax: Axes) -> None:
-        self._plot_label_map(ax, row=3)
-
-    @panel()
-    def map_a5(self, ax: Axes) -> None:
-        self._plot_label_map(ax, row=4)
+    def solutions_maps(self, ax: Axes) -> None:
+        """Plot the bottom row: model overlay masks at the halt step."""
+        axs = subdivide_axes(ax, nrows=1, ncols=self.N_MAZES)
+        for row, ax_i in enumerate(axs.ravel()):
+            self._plot_model_map(ax_i, row=row)
 
     def _plot_model_map(self, ax: Axes, row: int) -> None:
         input_grid = reshape_grid(self.inputs[row])
         model_grid = reshape_grid(self.model_overlays[row])
         plot_maze_with_overlay(ax, input_grid, model_grid)
 
-    @panel()
-    def map_b1(self, ax: Axes) -> None:
-        self._plot_model_map(ax, row=0)
-
-    @panel()
-    def map_b2(self, ax: Axes) -> None:
-        self._plot_model_map(ax, row=1)
-
-    @panel()
-    def map_b3(self, ax: Axes) -> None:
-        self._plot_model_map(ax, row=2)
-
-    @panel()
-    def map_b4(self, ax: Axes) -> None:
-        self._plot_model_map(ax, row=3)
-
-    @panel()
-    def map_b5(self, ax: Axes) -> None:
-        self._plot_model_map(ax, row=4)
-
 
 def _get_required_extras(ctx: FigureContext) -> tuple[np.ndarray, np.ndarray]:
+    """Read and validate `inputs` and `labels` from `ctx.extras`.
+
+    The figure only needs a small batch for visualization. We cap the returned
+    arrays to 10 items to avoid accidentally rendering very wide figures.
+    """
     inputs = ctx.extras.get("inputs")
     labels = ctx.extras.get("labels")
     if inputs is None or labels is None:
         raise ValueError("overlay requires extras: inputs, labels")
     inputs_arr = np.asarray(inputs)
     labels_arr = np.asarray(labels)
-    if inputs_arr.shape[0] < 5 or labels_arr.shape[0] < 5:
-        raise ValueError("overlay requires at least 5 samples in extras")
-    return inputs_arr[:5], labels_arr[:5]
+    return inputs_arr[:10], labels_arr[:10]  # Max 10 samples for display
 
 
 def _select_model_overlays(trace: TraceTree) -> np.ndarray:
+    """Select per-sample model overlay masks at the first halt time.
+
+    The trace is expected to provide:
+
+    - `act/halted`: boolean-like array of shape `[T, B]`
+    - `pred/is_o`: array of shape `[T, B, N]`, where `N` is the flattened grid size
+
+    For each batch item `b`, we pick `t_halt = first_halt_index(halted[:, b])` and
+    return `pred/is_o[t_halt, b]`.
+
+    Max number of batch items is capped to 10 to limit figure width.
+    """
     halted = np.asarray(trace.get("act/halted"))
     pred_is_o = np.asarray(trace.get("pred/is_o"))
     if halted.ndim != 2:
-        raise ValueError("act/halted must have shape [T, 5]")
+        raise ValueError("act/halted must have shape [T, B]")
     if pred_is_o.ndim != 3:
-        raise ValueError("pred/is_o must have shape [T, 5, 900]")
+        raise ValueError("pred/is_o must have shape [T, B, N]")
 
     overlays = []
-    for b in range(min(5, halted.shape[1])):
+    for b in range(min(10, halted.shape[1])):
         t_halt = first_halt_index(halted[:, b])
         overlays.append(pred_is_o[t_halt, b])
     return np.stack(overlays, axis=0)
 
 
 def _select_gt_overlays(labels: np.ndarray) -> np.ndarray:
+    """Return a boolean mask where labels equal the overlay token (`O_ID`)."""
     return labels == O_ID
