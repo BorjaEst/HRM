@@ -65,11 +65,9 @@ class OverlayFigure(BaseFigureTemplate):
     `solutions_maps` on the second row.
     """
 
-    HEIGHT_FRAC: float = 0.24
+    HEIGHT_FRAC: float = 0.22
     MOSAIC = [["labels_maps"], ["solutions_maps"]]
-    # Keep this in sync with the batch dimension expected by trace keys and
-    # the number of samples pulled from `ctx.extras`.
-    N_MAZES: int = 6
+    N_PANELS: int = 5  # fixed panel count (developer-configurable)
 
     def __init__(self, trace: TraceTree, ctx: FigureContext) -> None:
         super().__init__(trace, ctx)
@@ -80,26 +78,18 @@ class OverlayFigure(BaseFigureTemplate):
     @panel()
     def labels_maps(self, ax: Axes) -> None:
         """Plot the top row: ground-truth overlay masks."""
-        axs = subdivide_axes(ax, nrows=1, ncols=self.N_MAZES)
-        for row, ax_i in enumerate(axs.ravel()):
-            self._plot_label_map(ax_i, row=row)
-
-    def _plot_label_map(self, ax: Axes, row: int) -> None:
-        input_grid = reshape_grid(self.inputs[row])
-        gt_grid = reshape_grid(self.gt_overlays[row])
-        plot_maze_with_overlay(ax, input_grid, gt_grid)
+        axs = subdivide_axes(ax, nrows=1, ncols=self.N_PANELS)
+        for ax_i, input_grid, gt_grid in zip(axs[0], self.inputs, self.gt_overlays):
+            input_grid, gt_grid = reshape_grid(input_grid), reshape_grid(gt_grid)
+            plot_maze_with_overlay(ax_i, input_grid, gt_grid)
 
     @panel()
     def solutions_maps(self, ax: Axes) -> None:
         """Plot the bottom row: model overlay masks at the halt step."""
-        axs = subdivide_axes(ax, nrows=1, ncols=self.N_MAZES)
-        for row, ax_i in enumerate(axs.ravel()):
-            self._plot_model_map(ax_i, row=row)
-
-    def _plot_model_map(self, ax: Axes, row: int) -> None:
-        input_grid = reshape_grid(self.inputs[row])
-        model_grid = reshape_grid(self.model_overlays[row])
-        plot_maze_with_overlay(ax, input_grid, model_grid)
+        axs = subdivide_axes(ax, nrows=1, ncols=self.N_PANELS)
+        for ax_i, input_grid, model_grid in zip(axs[0], self.inputs, self.model_overlays):
+            input_grid, model_grid = reshape_grid(input_grid), reshape_grid(model_grid)
+            plot_maze_with_overlay(ax_i, input_grid, model_grid)
 
 
 def _get_required_extras(ctx: FigureContext) -> tuple[np.ndarray, np.ndarray]:
@@ -114,7 +104,7 @@ def _get_required_extras(ctx: FigureContext) -> tuple[np.ndarray, np.ndarray]:
         raise ValueError("overlay requires extras: inputs, labels")
     inputs_arr = np.asarray(inputs)
     labels_arr = np.asarray(labels)
-    return inputs_arr[:10], labels_arr[:10]  # Max 10 samples for display
+    return inputs_arr, labels_arr
 
 
 def _select_model_overlays(trace: TraceTree) -> np.ndarray:

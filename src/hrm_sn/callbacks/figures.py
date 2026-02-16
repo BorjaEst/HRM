@@ -49,7 +49,7 @@ class FigureCallbackSettings(BaseModel, extra="forbid"):
         description="Split to sample for figure generation.",
     )
     figures: List[str] = Field(
-        default_factory=lambda: ["overlay"],
+        default_factory=lambda: ["overlay", "evolution"],
         description="Figure names to generate (from registry).",
     )
     save_pdf: bool = Field(
@@ -257,7 +257,7 @@ class FiguresCallback(pl.Callback):
             if value is None:
                 continue
             if torch.is_tensor(value):
-                extras[key] = value[:5].detach().cpu().numpy()
+                extras[key] = value[:10].detach().cpu().numpy()
             else:
                 extras[key] = value
         return extras

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hrm_sn.figures.modules import dummy, overlay
+from hrm_sn.figures.modules import dummy, evolution, overlay
 from hrm_sn.figures.registry import REGISTRY, FigureSpec
 
 
@@ -27,10 +27,25 @@ def register_builtin_figures() -> None:
         REGISTRY.register(
             FigureSpec(
                 name="overlay",
-                description="MazeHard overlays: 5 samples with GT vs model paths",
+                description="MazeHard overlays: N samples with GT vs model paths",
                 plot=overlay.plot,
                 default_filename="overlay",
                 tags={"paper", "mazehard"},
+                trace_keys={"act/halted", "pred/is_o"},
+                extras_keys={"inputs", "labels"},
+            )
+        )
+
+    if not REGISTRY.has("evolution"):
+        REGISTRY.register(
+            FigureSpec(
+                name="evolution",
+                description=(
+                    "MazeHard prediction evolution: GT + per-step argmax overlays for one sample"
+                ),
+                plot=evolution.plot,
+                default_filename="evolution",
+                tags={"mazehard"},
                 trace_keys={"act/halted", "pred/is_o"},
                 extras_keys={"inputs", "labels"},
             )

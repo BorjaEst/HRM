@@ -244,6 +244,7 @@ def main() -> None:
     figs: list[tuple[str, Figure]] = [
         ("00.0_dummy_figure.png", figures.dummy.plot(trace, ctx)),
         ("01.1_maze_overlay.png", figures.overlay.plot(trace, ctx)),
+        ("01.2_pred_evolution.png", figures.evolution.plot(trace, ctx)),
     ]
 
     print(f"Step 4/5: Generated {len(figs)} figure(s):")

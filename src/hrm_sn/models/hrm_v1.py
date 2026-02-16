@@ -20,7 +20,7 @@ where `effective_bs` is used for distributed-safe normalization of loss/metrics.
 import math
 from dataclasses import dataclass
 from itertools import repeat
-from typing import Any, Dict, Iterable, List, Optional, Tuple, TypeAlias
+from typing import Any, Dict, List, Optional, Tuple, TypeAlias
 
 import lightning as L
 import torch
@@ -32,14 +32,14 @@ from torch.optim import Optimizer
 from hrm_sn.data.maze_vocab import O_ID
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.metrics import build_metrics, update_metrics_from_step
-from hrm_sn.modules.hrm import HRMConfig, HRModel, HRMState
-from hrm_sn.rollouts.collect import TraceCollector, TraceField, TraceGetter, TraceSpec, TraceValue
+from hrm_sn.modules.hrm import HRMConfig, HRModel
+from hrm_sn.rollouts.collect import TraceCollector, TraceField, TraceSpec, TraceValue
 from hrm_sn.rollouts.trace_tree import TraceTree
 from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
-from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop, StepBatchSource, StepContext
+from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop, StepContext
 from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConfig, SequentialLR
 
 # TODO: Consider moving these aliases to `hrm_sn/types.py` once stabilized.
