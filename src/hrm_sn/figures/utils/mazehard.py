@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+import math
+from typing import Iterable, Optional, Tuple
 
 import numpy as np
 
-GRID_N = 30
-SEQ_LEN = GRID_N * GRID_N
-O_ID = 5
 
+def reshape_grid(seq: np.ndarray, *, grid_shape: Optional[Tuple[int, int]] = None) -> np.ndarray:
+    """Reshape a flat sequence into a 2D grid.
 
-def reshape_grid(seq: np.ndarray) -> np.ndarray:
-    """Reshape a flat sequence into a GRID_N x GRID_N grid."""
+    If ``grid_shape`` is not provided, infer a square grid and validate it.
+    """
     arr = np.asarray(seq)
-    if arr.size != SEQ_LEN:
-        raise ValueError(f"Expected sequence length {SEQ_LEN}, got {arr.size}")
-    return arr.reshape((GRID_N, GRID_N))
+    if grid_shape is None:
+        n = int(math.isqrt(arr.size))
+        if n * n != arr.size:
+            raise ValueError(f"Expected square sequence length, got {arr.size}")
+        grid_shape = (n, n)
+    if grid_shape[0] * grid_shape[1] != arr.size:
+        raise ValueError(
+            f"Expected sequence length {grid_shape[0] * grid_shape[1]}, got {arr.size}"
+        )
+    return arr.reshape(grid_shape)
 
 
 def first_halt_index(halted_t: Iterable[bool]) -> int:

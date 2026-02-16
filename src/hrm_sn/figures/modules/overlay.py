@@ -10,11 +10,12 @@ import pub_ready_plots as prp
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
+from hrm_sn.data.maze_vocab import O_ID
 from hrm_sn.figures.figures.base import BaseFigureTemplate
 from hrm_sn.figures.figures.panels import colorbar, panel
 from hrm_sn.figures.plots.mazehard import plot_maze_with_overlay
 from hrm_sn.figures.registry import FigureContext
-from hrm_sn.figures.utils.mazehard import O_ID, first_halt_index, reshape_grid
+from hrm_sn.figures.utils.mazehard import first_halt_index, reshape_grid
 from hrm_sn.rollouts.trace_tree import TraceTree
 
 

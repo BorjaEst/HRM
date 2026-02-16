@@ -10,9 +10,10 @@ from pydantic import BaseModel
 from tqdm import tqdm
 
 from hrm_sn.data.metadata import PuzzleDatasetMetadata
+from hrm_sn.data.maze_vocab import MAZE_CHARSET
 from hrm_sn.utils.symmetry import dihedral_transform
 
-CHARSET = "# SGo"
+CHARSET = MAZE_CHARSET
 
 
 class DataProcessConfig(BaseModel):

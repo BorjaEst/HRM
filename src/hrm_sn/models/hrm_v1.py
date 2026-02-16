@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from torch import Tensor
 from torch.optim import Optimizer
 
-from hrm_sn.figures.utils.mazehard import O_ID
+from hrm_sn.data.maze_vocab import O_ID
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.metrics import build_metrics, update_metrics_from_step
 from hrm_sn.modules.hrm import HRMConfig, HRModel, HRMState
