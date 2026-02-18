@@ -56,9 +56,9 @@ NAME = __file__.split("/")[-1].replace(".py", "")
 logger = logging.getLogger(NAME)
 
 
-# ==============================================================================
+# =================================================================================================
 # Configuration
-# ==============================================================================
+# =================================================================================================
 class ExampleArguments(BaseSettings, extra="ignore", cli_parse_args=True, cli_prog_name="run"):
     """CLI + config-file arguments for this example.
 
@@ -156,9 +156,9 @@ class ExampleArguments(BaseSettings, extra="ignore", cli_parse_args=True, cli_pr
         return v
 
 
-# ==============================================================================
+# =================================================================================================
 # Main Experiment
-# ==============================================================================
+# =================================================================================================
 def main() -> None:
     """Run a single eval rollout and save diagnostic figures."""
 
@@ -184,26 +184,31 @@ def main() -> None:
     print(f" - Output directory: {args.output_dir}")
     print()
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     # Step 1: Instantiate Dataset and build runtime objects.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     dataset = PuzzleDataset(args.dataset, args.runtime, mode="eval")
 
     print("Step 1/5: Dataset initialized.")
     print()
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     # Step 2: Initialize HRM model.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     model = Model(args.model)
 
     # Load checkpoint if provided.
     if args.checkpoint:
         print(f"Loading checkpoint: {args.checkpoint}")
-        state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=False)["state_dict"]
-        hrm_sd = {k.removeprefix("model."): v for k, v in state_dict.items() if k.startswith("model.")}
-        model.load_state_dict(hrm_sd, strict=False)
+        ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+
+        # Lightning checkpoints typically store weights under "state_dict"
+        state_dict = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
+
+        incompatible = model.load_state_dict(state_dict, strict=False)
         print("Checkpoint loaded.")
+        print(f"Missing keys ({len(incompatible.missing_keys)}):", incompatible.missing_keys)
+        print(f"Unexpected keys ({len(incompatible.unexpected_keys)}):", incompatible.unexpected_keys)
     else:
         print("Using random initialization (no checkpoint provided).")
 
@@ -211,9 +216,9 @@ def main() -> None:
     print("Step 2/5: HRM model initialized.")
     print()
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     # Step 3: Collect rollout trace from the model on the dataset.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     set_name, batch, effective_bs = next(iter(dataset))
     collector = TraceCollector(TraceTree(), model.trace_specs)
     max_steps = model.config.act_controller.halt_max_steps
@@ -232,9 +237,9 @@ def main() -> None:
     print(f" - Max steps: {max_steps}")
     print()
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     # Step 4: Generate diagnostic visualizations.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     ctx = FigureContext(
         extras={
             "inputs": batch["inputs"].cpu().numpy(),
@@ -252,9 +257,9 @@ def main() -> None:
         print(f" - {filename}")
     print()
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     # Step 5: Save figures.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------
     for filename, fig in figs:
         fig.savefig(args.output_dir / filename, dpi=150, bbox_inches="tight")
         print(f"Saved: {args.output_dir / filename}")
@@ -266,8 +271,8 @@ def main() -> None:
     print("=" * 80)
 
 
-# ==============================================================================
+# =================================================================================================
 # Main Entry Point
-# ==============================================================================
+# =================================================================================================
 if __name__ == "__main__":
     main()

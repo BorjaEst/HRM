@@ -149,15 +149,15 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
     # ---------------------------------------------------------------------------------------------
     # Training control settings (passed as kwargs to Lightning Trainer)
     max_steps: int = Field(
-        default=20000,
+        default=80000,
         description="Maximum training steps.",
     )
     log_every_n_steps: int = Field(
-        default=10,
+        default=20,
         description="Log metrics every N steps.",
     )
     val_check_interval: int = Field(
-        default=200,
+        default=1000,
         description="Validation check interval (in training steps).",
     )
     enable_progress_bar: bool = Field(

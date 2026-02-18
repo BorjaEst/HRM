@@ -109,7 +109,7 @@ class EvaluationLoop(Iterator[Tuple[int, StepContext]]):
 
         # t_rollout is 0-indexed, so the first batch corresponds to t=0
         t_rollout, batch = next(self.batch_iter)  # enumerated, returns t in first position
-        options = {"allow_halt": True, "explore": False, "compute_targets": False}
+        options = {"allow_halt": False, "explore": False, "compute_targets": False}
         outputs, carry, done = self.loss_head(batch, self.carry, **options)
         self.carry = carry
 
