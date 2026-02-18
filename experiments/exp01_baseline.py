@@ -1,3 +1,35 @@
+"""Baseline training entrypoint (Experiment 01).
+
+This script wires together configuration, data, model, callbacks, and a PyTorch
+Lightning ``Trainer`` for a single baseline run.
+
+Configuration
+-------------
+
+The configuration is loaded from a TOML file (defaults) and can be overridden
+from the command line.
+
+Precedence is deterministic:
+
+1) CLI arguments
+2) TOML file (``config/defaults.toml`` by default)
+3) Environment variables / ``.env`` / secret files
+4) Pydantic defaults defined in :class:`RunArguments`
+
+The defaults TOML path can be overridden via ``EXP01_CONFIGURATION_PATH``.
+
+Usage
+-----
+
+Run with defaults:
+
+    python experiments/exp01_baseline.py
+
+Override settings from the CLI (examples):
+
+    python experiments/exp01_baseline.py --max_steps=2000 --log_every_n_steps=10
+"""
+
 from __future__ import annotations
 
 import os
@@ -31,13 +63,27 @@ CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/defaults
 # Settings Model
 # =================================================================================================
 class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_name="run"):
-    """ """
+    """Root experiment settings.
+
+    This is a Pydantic Settings model that supports parsing values from:
+
+    - the CLI (highest priority)
+    - environment variables
+    - TOML defaults loaded in ``__main__``
+
+    It also provides convenience properties (:attr:`model`, :attr:`datamodule`)
+    that compose leaf configs for the downstream modules.
+    """
 
     @classmethod
     def settings_customise_sources(  # ------------------------------------------------------------
         cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings,
     ) -> Tuple[PydanticBaseSettingsSource, ...]:  # fmt: skip
-        """ """
+        """Customize settings source order.
+
+        Pydantic Settings supports multiple value sources; we explicitly place
+        the CLI first so that command-line overrides always win.
+        """
         extra = [init_settings, env_settings, dotenv_settings, file_secret_settings]
         return CliSettingsSource(settings_cls), *extra
 
@@ -204,49 +250,43 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True, cli_prog_n
 # Main Entrypoint
 # =================================================================================================
 if __name__ == "__main__":
-    """Here goes a description
-    # TODO: write a detailed docstring describing the main entrypoint, the training loop,
-    #       and how the different components interact.
-    """
-
-    # Step _: Parse settings (CLI overrides TOML overrides defaults)
+    # Load defaults from TOML, then parse settings.
+    # CLI arguments override TOML values; Pydantic defaults fill in anything missing.
     defaults_from_path = tomllib.load(Path(CONFIGURATION_PATH).open("rb"))
     settings = RunArguments(**defaults_from_path)
 
-    # Step _: Seed everything for reproducibility
+    # Seed everything for reproducibility.
     seed_everything(settings.dataset.seed)
 
-    # Step _:
-    # Preparation of callbacks list: checkpointing + optional figure generation
+    # Prepare callbacks: checkpointing + optional figure generation.
     callbacks_list = []
     if settings.checkpoint is not None:
         callbacks_list.append(CheckpointCallback(settings.checkpoint))
     if settings.figures is not None and settings.figures.enabled:
         callbacks_list.append(FiguresCallback(settings.figures))
 
-    # Step _: Build the PyTorch Lightning Trainer
-    # This wires together logging, checkpointing, and training control
+    # Build the PyTorch Lightning Trainer.
+    # This wires together logging, callbacks, and training control.
     trainer = Trainer(
-        # Callbacks and TensorBoard logger for metrics and hyperparameters
+        # Logger + callbacks handle metrics/hparams, figures, and checkpointing.
         logger=Logger(settings.logger) if settings.logger is not None else None,
         callbacks=callbacks_list if callbacks_list else None,
         # Lightning Trainer kwargs (extracted from config)
         max_steps=settings.max_steps,
         val_check_interval=settings.val_check_interval,
         limit_val_batches=settings.limit_val_batches,
-        # Validation check every N steps (can also be set to a fraction for epoch-based checking)
         log_every_n_steps=settings.log_every_n_steps,
         enable_progress_bar=settings.enable_progress_bar,
     )
 
-    # Step _: Start training
-    # The LightningModule wraps the TEM model and defines the training loop
-    # The DataModule generates batches of walk data on-the-fly
+    # Start training.
+    # - The LightningModule wraps the HRM model and defines the training loop.
+    # - The DataModule constructs loaders for the puzzle/maze dataset.
     trainer.fit(
-        # Lightning module: training step, optimizer, schedule computation
+        # Lightning module: training step, optimizer and schedule setup.
         model=Model(settings.model),
-        # Data module: generates environment walks and batches
+        # Data module: dataset + DataLoader construction.
         datamodule=PuzzleDatamodule(settings.datamodule),
-        # Optional: resume from checkpoint
+        # Optional: resume training from a checkpoint.
         ckpt_path=settings.checkpoint_path,
     )
