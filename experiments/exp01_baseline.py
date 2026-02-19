@@ -56,7 +56,7 @@ from hrm_sn.training.schedules import SchedulerConfig
 
 # Configure PyTorch for better performance on modern GPUs
 torch.set_float32_matmul_precision("medium")
-CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/defaults.toml")
+CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/defaults_hrm.toml")
 
 
 # =================================================================================================
