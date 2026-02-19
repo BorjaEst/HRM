@@ -1,6 +1,6 @@
-# Default configuration for training the hierarchical reasoning model with ACT
+# Tinynet TRM configuration
 project_name = "hrm_sn"
-run_name = "recursive_reasoning.hrm_v1@Model"
+run_name = "recursive_reasoning.trm_v1@Model"
 global_batch_size = 16
 epochs = 10
 
@@ -16,16 +16,17 @@ expansion = 4.0
 rms_norm_eps = 1e-5
 
 [architecture.reasoning_h]
-layers = 4
-cycles = 2
+layers = 3
+cycles = 0
 
 [architecture.reasoning_l]
-layers = 4
+layers = 6
 cycles = 2
 
 [act_controller]
 exploration_prob = 0.1
 halt_max_steps = 16
+no_ACT_continue = true # Use sigmoid of the halt
 
 [loss]
 function = "stablemax_cross_entropy"
