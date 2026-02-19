@@ -1,7 +1,7 @@
 """HRM v1 Lightning module.
 
 This module defines a PyTorch Lightning `LightningModule` wrapper around the core HRM
-architecture (`HRModel`) together with Adaptive Computation Time (ACT) control and loss
+architecture (`HRModel`) with Adaptive Computation Time (ACT) control and loss
 computation.
 
 Key behaviors:
@@ -39,8 +39,8 @@ from hrm_sn.training.act_controller import ACTController, ACTControllerConfig
 from hrm_sn.training.buffers import FifoBuffer
 from hrm_sn.training.optim import AdamATan2, AdamATan2Config
 from hrm_sn.training.partial_reset import PartialResetBatchAssembler
-from hrm_sn.training.rollout import EvaluationLoop, RolloutLoop, StepContext
 from hrm_sn.training.schedules import CosineAnnealingLRWithWarmup, SchedulerConfig, SequentialLR
+from hrm_sn.training.step_loop import StepContext, StepLoop
 
 # TODO: Consider moving these aliases to `hrm_sn/types.py` once stabilized.
 # NOTE: The training pipeline uses a "named split" batch to support multi-dataloader setups.
@@ -209,7 +209,7 @@ class Model(L.LightningModule):
     This module composes:
         - `HRModel`: the core architecture
         - `ACTController`: halting/partial-reset logic
-        - `ACTLossHead`: computes loss and aggregates metrics
+        - A step module that computes loss and aggregates metrics
 
     Training uses manual optimization (`automatic_optimization = False`) to preserve
     legacy behavior (one backward pass, then explicit optimizer/scheduler steps).
@@ -226,12 +226,12 @@ class Model(L.LightningModule):
         Notes:
             - Initializes a FIFO buffer and `PartialResetBatchAssembler` used to implement
               partial-reset semantics during training.
-            - `_train_carry` is initialized lazily from the first batch via `loss_head`.
+            - `_train_carry` is initialized lazily from the first batch via `step_module`.
         """
         super().__init__()
         self.model = HRModel(config.architecture)
         self.controller = ACTController(self.model, config.act_controller)
-        self.loss_head = ACTLossHead(self.controller, config.loss)
+        self.step_module = ACTLossHead(self.controller, config.loss)
         self._config = config
 
         # Manual optimization: one backward, explicit opt/scheduler steps (legacy parity).
@@ -245,9 +245,7 @@ class Model(L.LightningModule):
         self.val_metrics = base_metrics.clone(prefix="val/")
         self.trace_specs = TraceSpec(fields=trace_fields())
 
-        # Buffer + assembler implement partial-reset batching:
-        # halted examples are "replaced" by new incoming rows, while continuing examples keep
-        # their state and may reuse buffered rows.
+        # Buffer + assembler implement partial-reset batching for ACT runs.
         self._train_buffer = FifoBuffer(
             capacity_rows=4 * config.global_batch_size,  # or local batch size if you prefer
             keys=("inputs", "labels"),
@@ -364,32 +362,33 @@ class Model(L.LightningModule):
     ) -> Dict[str, object]:  # fmt: skip
         """Run one training step with manual optimization.
 
-        The training logic implements "partial reset": examples that halted in the previous
-        step are replaced by new rows from the incoming batch, while continuing examples keep
-        their carry/state.
+        The training logic uses partial reset to replace halted slots with fresh examples.
 
         Notes:
-            - Horizon is effectively 1: we run exactly one ACT/rollout step per mini-batch.
+            - Horizon is effectively 1: we run exactly one rollout step per mini-batch.
             - Loss is normalized by the *global* effective batch size for parity with legacy code.
         """
         set_name, batch_dict, effective_bs = batch
 
         # Initialize carry/state on the first batch
         if self._train_carry is None:
-            self._train_carry = self.loss_head.initial_carry(batch_dict)
+            self._train_carry = self.step_module.initial_carry(batch_dict)
 
         # Assemble a step batch using the previous carry's halted mask.
         # `reset_mask=True` means "this row is done, replace it with a fresh example".
-        step_batch = self._train_batch_assembler.make_step_batch(
+        assembler = self._train_batch_assembler
+        step_batch = assembler.make_step_batch(
             incoming=batch_dict,
             reset_mask=self._train_carry.halted,  # vectorized done flags
         )
 
         # Horizon=1 matches legacy behavior: exactly one ACT step per mini-batch.
         step_batches = repeat(step_batch, 1)
+        carry0 = self._train_carry
+        act_options = self.config.act_controller.model_dump()
 
         step = None
-        for t, step in RolloutLoop(self.loss_head, step_batches, carry0=self._train_carry):
+        for t, step in StepLoop(self.step_module, step_batches, carry0, options=act_options):
             pass  # TODO: Sum loss across steps if horizon > 1
         if step is None:
             raise ValueError("RolloutLoop did not yield any steps, cannot proceed with training step.")
@@ -426,19 +425,20 @@ class Model(L.LightningModule):
         set_name, batch_dict, effective_bs = batch
 
         # Run a full ACT rollout so halted-only metrics are meaningful.
-        step_batches = repeat(batch_dict)
-        max_steps = self.config.act_controller.halt_max_steps
+        step_batches = repeat(batch_dict)  # Run until all examples halt
+        carry0 = self.step_module.initial_carry(batch_dict)
+        act_options = self.config.act_controller.model_dump()
 
         # Initialize carry/state on the first batch
         step, collector = None, TraceCollector(TraceTree(), self.trace_specs)
-        for t, step in EvaluationLoop(self.loss_head, step_batches, max_steps=max_steps):
+        for t, step in StepLoop(self.step_module, step_batches, carry0, options=act_options):
             collector.append(t, step)
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")
 
         update_metrics_from_step(self.val_metrics, step.outputs.metrics)
         vals = self.val_metrics.compute()  # Compute metrics based on accumulated state
-        self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        self.log_dict(vals, on_step=False, on_epoch=True, prog_bar=False, logger=True)
         self.log("val/accuracy", vals["val/all/accuracy"], prog_bar=True, logger=True)
 
         return {"trace": collector.tree, "effective_bs": effective_bs}
