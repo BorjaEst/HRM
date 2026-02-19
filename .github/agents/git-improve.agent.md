@@ -1,7 +1,7 @@
 ---
 description: "Help the engineer to improve the current changes."
 name: "Git Improve"
-tools: ["read", "search", "web"]
+tools: [execute, read, search, web]
 model: GPT-5.2 (copilot)
 ---
 
