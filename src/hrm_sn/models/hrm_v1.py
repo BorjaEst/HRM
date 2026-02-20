@@ -32,6 +32,7 @@ from torch.optim import Optimizer
 from hrm_sn.data.maze_vocab import O_ID
 from hrm_sn.loss.act_head import ACTLossConfig, ACTLossHead
 from hrm_sn.metrics import build_metrics, update_metrics_from_step
+from hrm_sn.modules.halting_head import LinearHaltingHead
 from hrm_sn.modules.hrm import HRMConfig, HRModel
 from hrm_sn.rollouts.collect import TraceCollector, TraceField, TraceSpec, TraceValue
 from hrm_sn.rollouts.trace_tree import TraceTree
@@ -230,7 +231,8 @@ class Model(L.LightningModule):
         """
         super().__init__()
         self.model = HRModel(config.architecture)
-        self.controller = ACTController(self.model, config.act_controller)
+        self.halt_head = LinearHaltingHead(config.architecture.hidden_size)
+        self.controller = ACTController(self.model, self.halt_head, config.act_controller)
         self.step_module = ACTLossHead(self.controller, config.loss)
         self._config = config
 
@@ -301,6 +303,7 @@ class Model(L.LightningModule):
             List containing a single `AdamATan2` optimizer for the HRM parameters.
         """
         params = [p for p in self.model.parameters() if p.requires_grad]
+        params.extend(p for p in self.halt_head.parameters() if p.requires_grad)
         optimizer = AdamATan2(params, self.config.optimizer)
         return [optimizer]
 

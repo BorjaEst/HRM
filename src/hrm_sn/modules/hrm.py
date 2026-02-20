@@ -274,7 +274,6 @@ class HRModel(nn.Module):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, device=device, dtype=dtype)
         self.embed_pos = nn.Embedding(config.seq_length, config.hidden_size, device=device, dtype=dtype)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False, device=device, dtype=dtype)
-        self.halt_q_head = nn.Linear(config.hidden_size, 2, bias=True, device=device, dtype=dtype)
 
         # Reasoning Layers
         self.high_level = ReasoningModule(config.h_layers)
@@ -303,11 +302,6 @@ class HRModel(nn.Module):
         """
         trunc_normal_init_(self.high_reset_vector, std=1)
         trunc_normal_init_(self.low_reset_vector, std=1)
-
-        # Initialize Q head near-zero so early training behaves predictably.
-        with torch.no_grad():
-            self.halt_q_head.weight.zero_()
-            self.halt_q_head.bias.fill_(-5)  # type: ignore
 
     def init_state(  # ----------------------------------------------------------------------------
         self, batch_size: int,
@@ -353,7 +347,7 @@ class HRModel(nn.Module):
     def forward(  # -------------------------------------------------------------------------------
         self, inputs: Tensor, 
         state: Optional[HRMState] = None,
-    ) -> Tuple[HRMState, Tensor, Tuple[Tensor, Tensor]]:  # fmt: skip
+    ) -> Tuple[HRMState, Tensor, Tensor]:  # fmt: skip
         """Run a forward pass.
 
         Args:
@@ -362,10 +356,10 @@ class HRModel(nn.Module):
                 state is allocated.
 
         Returns:
-            ``(new_state, lm_logits, (halt_q0, halt_q1))`` where:
+            ``(new_state, lm_logits, features)`` where:
             - ``new_state`` contains detached states to carry to the next step.
             - ``lm_logits`` has shape ``[batch, seq_length, vocab_size]``.
-            - Halt Q logits are per-example (computed from position 0).
+            - ``features`` is a differentiable tensor of shape ``[batch, hidden_size]``.
         """
         config = self.config  # convenience alias
         state = state or self.init_state(batch_size=inputs.shape[0])
@@ -385,10 +379,8 @@ class HRModel(nn.Module):
         new_state = HRMState(z_H=z_H.detach(), z_L=z_L.detach())
         # Language-modeling head predicts a token distribution at each position.
         output = self.lm_head(z_H)
-        # Halt Q head is computed from a single "summary" token (position 0).
-        halt_q_logits = self.halt_q_head(z_H[:, 0]).to(torch.float32)
 
-        return new_state, output, (halt_q_logits[..., 0], halt_q_logits[..., 1])
+        return new_state, output, z_H[:, 0]
 
     def run_high_cycles(  # -----------------------------------------------------------------------
         self, x: Tensor, state: HRMState,

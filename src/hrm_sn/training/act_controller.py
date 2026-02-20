@@ -3,7 +3,8 @@ from __future__ import annotations
 """ACT halting controller with TD(0) bootstrapping.
 
 This module implements a lightweight, RL-inspired controller around a recurrent
-model that exposes two scalar “Q-logits” per batch element:
+backbone that exposes differentiable features plus a halting head that produces
+two scalar “Q-logits” per batch element:
 
 - ``q_halt``: preference for halting at the current step
 - ``q_continue``: preference for continuing to another recurrent step
@@ -59,18 +60,15 @@ class ACTControllerConfig(BaseModel, extra="forbid"):
 
 
 # =================================================================================================
-class ACTNetwork(Protocol):
-    """Minimal interface required by the ACT controller.
+class ACTBackbone(Protocol):
+    """Minimal interface required by the ACT controller backbone.
 
-    The controller treats the model as a recurrent function:
+    The controller treats the backbone as a recurrent function:
 
     - Input: ``inputs`` for the current slot step and an optional recurrent
         ``state``.
-    - Output: next recurrent state, main prediction logits, and a pair of
-        per-slot Q-logits ``(q_halt, q_continue)``.
-
-    This protocol intentionally matches the calling convention used elsewhere
-    in the codebase (e.g. ``HRModel.forward(inputs, state=None)``).
+    - Output: next recurrent state, main prediction logits, and differentiable
+        features used by the halting head.
     """
 
     def init_state(  # ----------------------------------------------------------------------------
@@ -85,7 +83,17 @@ class ACTNetwork(Protocol):
 
     def __call__(  # ------------------------------------------------------------------------------
         self, inputs: Tensor, state: Any | None = None
-    ) -> Tuple[Any, Tensor, Tuple[Tensor, Tensor]]:  # fmt: skip
+    ) -> Tuple[Any, Tensor, Tensor]:  # fmt: skip
+        ...  # fmt: skip
+
+
+# =================================================================================================
+class HaltingHead(Protocol):
+    """Minimal interface for converting features into halting logits."""
+
+    def __call__(  # ------------------------------------------------------------------------------
+        self, features: Tensor
+    ) -> Tuple[Tensor, Tensor]:  # fmt: skip
         ...  # fmt: skip
 
 
@@ -142,7 +150,7 @@ class ACTController:
     - Resetting recurrent state for slots that finished an episode.
     - Swapping in fresh batch elements for finished slots (without changing
       batch size).
-    - Selecting halt/continue actions from model-provided Q-logits.
+    - Selecting halt/continue actions from halting-head Q-logits.
     - Optionally computing TD(0) targets for the continue head during training.
 
     Important:
@@ -155,21 +163,27 @@ class ACTController:
     CONTINUE_ACTION = 1
 
     def __init__(  # ------------------------------------------------------------------------------
-        self, model: ACTNetwork, config: ACTControllerConfig
+        self, backbone: ACTBackbone, halt_head: HaltingHead, config: ACTControllerConfig
     ) -> None:  # fmt: skip
         """Initialize the ACT controller.
 
         Args:
-            model: The recurrent model to control, which must implement the
-                :class:`ACTNetwork` protocol.
+            backbone: The recurrent backbone to control, which must implement the
+                :class:`ACTBackbone` protocol.
+            halt_head: Module that converts backbone features into halting logits.
             config: Configuration for the controller behavior.
         """
-        self._model = model
+        self._backbone = backbone
+        self._halt_head = halt_head
         self._config = config
 
     @property
-    def model(self) -> ACTNetwork:
-        return self._model
+    def backbone(self) -> ACTBackbone:
+        return self._backbone
+
+    @property
+    def halt_head(self) -> HaltingHead:
+        return self._halt_head
 
     @property
     def config(self) -> ACTControllerConfig:
@@ -186,7 +200,7 @@ class ACTController:
         """
         batch_size, device = batch_sample["inputs"].shape[0], batch_sample["inputs"].device
         return ACTState(  # FIXME: We need to replace batch_dict by observations and labels
-            model_state=self.model.init_state(batch_size),
+            model_state=self.backbone.init_state(batch_size),
             steps=torch.zeros((batch_size,), dtype=torch.int32, device=device),
             halted=torch.ones((batch_size,), dtype=torch.bool, device=device),
             data={k: torch.empty_like(v) for k, v in batch_sample.items()},
@@ -212,8 +226,9 @@ class ACTController:
                 random subset of slots (per-step exploration rule).
         """
         data = self.refresh_slot_data(batch, state)
-        model_state = self.model.reset_state(state.halted, state.model_state)
-        model_state, logits, (q_halt, q_continue) = self.model(data["inputs"], model_state)
+        model_state = self.backbone.reset_state(state.halted, state.model_state)
+        model_state, logits, features = self.backbone(data["inputs"], model_state)
+        q_halt, q_continue = self.halt_head(features)
 
         # Reset the step counter when a slot starts a fresh episode.
         steps = torch.where(state.halted, 0, state.steps) + 1
@@ -263,6 +278,7 @@ class ACTController:
             halting at step 1 and encourages multi-step rollouts.
         """
         config = self.config  # convenience alias
+        q_halt, q_continue = q_halt.detach(), q_continue.detach()  # No gradients flow
         action = torch.where(q_halt > q_continue, self.HALT_ACTION, self.CONTINUE_ACTION)
         done = steps >= config.halt_max_steps
 
@@ -279,4 +295,4 @@ class ACTController:
         return action, done
 
 
-__all__ = ["ACTControllerConfig", "ACTNetwork", "ACTController", "ACTState"]
+__all__ = ["ACTBackbone", "ACTControllerConfig", "ACTController", "ACTState", "HaltingHead"]
