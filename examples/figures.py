@@ -35,6 +35,7 @@ from pydantic_settings import BaseSettings, CliSettingsSource, PydanticBaseSetti
 from hrm_sn import figures
 from hrm_sn.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetRuntime, PuzzleDatasetSettings
 from hrm_sn.figures.registry import FigureContext
+from hrm_sn.figures.sinks import save_pdf
 from hrm_sn.loss.act_head import ACTLossConfig
 from hrm_sn.models.hrm_v1 import Model, ModelConfig_HRM_V1
 from hrm_sn.modules.hrm import HRMConfig
@@ -248,9 +249,9 @@ def main() -> None:
         }
     )
     figs: list[tuple[str, Figure]] = [
-        ("00.0_dummy_figure.png", figures.dummy.plot(trace, ctx)),
-        ("01.1_maze_overlay.png", figures.overlay.plot(trace, ctx)),
-        ("01.2_pred_evolution.png", figures.evolution.plot(trace, ctx)),
+        ("00.0_dummy_figure.pdf", figures.dummy.plot(trace, ctx)),
+        ("01.1_maze_overlay.pdf", figures.overlay.plot(trace, ctx)),
+        ("01.2_pred_evolution.pdf", figures.evolution.plot(trace, ctx)),
     ]
 
     print(f"Step 4/5: Generated {len(figs)} figure(s):")
@@ -262,7 +263,7 @@ def main() -> None:
     # Step 5: Save figures.
     # ---------------------------------------------------------------------------------------------
     for filename, fig in figs:
-        fig.savefig(args.output_dir / filename, dpi=150, bbox_inches="tight")
+        save_pdf(fig, args.output_dir / filename)
         print(f"Saved: {args.output_dir / filename}")
     plt.close("all")
 
