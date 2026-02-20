@@ -21,7 +21,7 @@ Notes
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -175,7 +175,7 @@ class ACTLossHead(nn.Module):
         return self.controller.initial_state(batch_sample)
 
     def forward(  # -------------------------------------------------------------------------------
-        self, batch: Batch, carry: ACTState
+        self, batch: Batch, carry: ACTState, **options: Mapping[str, object],
     ) -> Tuple[ACTStepOutput, ACTState, bool]:  # fmt: skip
         """Run one ACT step, returning the step loss, updated state, and metrics.
 
