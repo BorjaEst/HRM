@@ -49,7 +49,7 @@ from hrm_sn.training.step_loop import StepLoop
 torch.set_float32_matmul_precision("medium")
 
 # Optional override for the experiment configuration path.
-CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/defaults.toml")
+CONFIGURATION_PATH = os.environ.get("EXP01_CONFIGURATION_PATH", "config/defaults_hrm.toml")
 
 
 NAME = __file__.split("/")[-1].replace(".py", "")
@@ -222,10 +222,10 @@ def main() -> None:
     set_name, batch, effective_bs = next(iter(dataset))
     collector = TraceCollector(TraceTree(), model.trace_specs)
     step_batches = repeat(batch)
-    carry0 = model.eval_step_module.initial_carry(batch)
+    carry0 = model.step_module.initial_carry(batch)
 
     with torch.no_grad():
-        for t, step in StepLoop(model.eval_step_module, step_batches, carry0):
+        for t, step in StepLoop(model.step_module, step_batches, carry0):
             collector.append(t, step)
     trace = collector.tree
     trace.finalize()
