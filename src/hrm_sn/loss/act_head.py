@@ -224,11 +224,11 @@ class ACTLossHead(nn.Module):
         token_count_per_seq = stats.loss_counts.clamp_min(1).to(torch.float32)  # (B,)
         seq_accuracy = token_correct_per_seq / token_count_per_seq  # (B,)
 
-        pred_halt = outputs.halt_logits > outputs.continue_logits  # (B,)
+        pred_halt = outputs.action == ACTController.HALT_ACTION  # (B,)
         q_halt_correct = pred_halt == stats.seq_is_correct  # (B,)
 
         q_continue_correct: Optional[Tensor] = None
-        if outputs.target_continue is not None:
+        if outputs.target_continue is not None and outputs.continue_logits is not None:
             # The continue head uses a dedicated target produced by the controller.
             pred_continue = outputs.continue_logits >= 0  # (B,)
             q_continue_correct = pred_continue == stats.seq_is_correct  # (B,)
@@ -308,7 +308,7 @@ class ACTLossHead(nn.Module):
         )
 
         # Continue loss: optional auxiliary supervision from the controller.
-        if outputs.target_continue is not None:
+        if outputs.target_continue is not None and outputs.continue_logits is not None:
             q_continue_loss = F.binary_cross_entropy_with_logits(
                 input=outputs.continue_logits,
                 target=outputs.target_continue,
