@@ -271,7 +271,9 @@ class ACTController:
 
         if explore and (config.halt_max_steps > 1):
             exploration_flag = torch.rand_like(q_halt) < config.exploration_prob
-            min_halt_steps = exploration_flag * torch.randint_like(steps, low=2, high=config.halt_max_steps + 1)
+            min_halt_steps = exploration_flag * torch.randint_like(
+                steps, low=2, high=config.halt_max_steps + 1
+            )
             done = done & (steps >= min_halt_steps)
 
         return action, done

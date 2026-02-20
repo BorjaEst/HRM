@@ -384,10 +384,11 @@ class Model(L.LightningModule):
 
         # Horizon=1 matches legacy behavior: exactly one ACT step per mini-batch.
         step_batches = repeat(step_batch, 1)
+        act_options = {"allow_halt": True, "explore": True}  # Allow halt and exploration in training
         carry0 = self._train_carry
 
         step = None
-        for t, step in StepLoop(self.step_module, step_batches, carry0):
+        for t, step in StepLoop(self.step_module, step_batches, carry0, options=act_options):
             pass  # TODO: Sum loss across steps if horizon > 1
         if step is None:
             raise ValueError("RolloutLoop did not yield any steps, cannot proceed with training step.")
@@ -425,11 +426,12 @@ class Model(L.LightningModule):
 
         # Run a full ACT rollout so halted-only metrics are meaningful.
         step_batches = repeat(batch_dict)  # Run until all examples halt
+        act_options = {"allow_halt": False, "explore": False}  # No halt or exploration in validation
         carry0 = self.step_module.initial_carry(batch_dict)
 
         # Initialize carry/state on the first batch
         step, collector = None, TraceCollector(TraceTree(), self.trace_specs)
-        for t, step in StepLoop(self.step_module, step_batches, carry0):
+        for t, step in StepLoop(self.step_module, step_batches, carry0, options=act_options):
             collector.append(t, step)
         if step is None:
             raise ValueError("Evaluation loop did not yield any steps, cannot log metrics.")

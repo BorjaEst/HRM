@@ -223,10 +223,11 @@ def main() -> None:
     set_name, batch, effective_bs = next(iter(dataset))
     collector = TraceCollector(TraceTree(), model.trace_specs)
     step_batches = repeat(batch)
+    act_options = {"allow_halt": False, "explore": False}  # Disable halting and exploration during eval
     carry0 = model.step_module.initial_carry(batch)
 
     with torch.no_grad():
-        for t, step in StepLoop(model.step_module, step_batches, carry0):
+        for t, step in StepLoop(model.step_module, step_batches, carry0, options=act_options):
             collector.append(t, step)
     trace = collector.tree
     trace.finalize()
