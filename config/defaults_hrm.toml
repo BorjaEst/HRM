@@ -26,6 +26,7 @@ cycles = 2
 [act_controller]
 exploration_prob = 0.1
 halt_max_steps = 16
+no_ACT_continue = true # Sigmoid of halt 
 
 [loss]
 function = "stablemax_cross_entropy"
