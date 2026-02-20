@@ -42,8 +42,8 @@ from hrm_sn.rollouts.collect import TraceCollector
 from hrm_sn.rollouts.trace_tree import TraceTree
 from hrm_sn.training.act_controller import ACTControllerConfig
 from hrm_sn.training.optim import AdamATan2Config
-from hrm_sn.training.rollout import EvaluationLoop
 from hrm_sn.training.schedules import SchedulerConfig
+from hrm_sn.training.step_loop import StepLoop
 
 # Configure PyTorch for better performance on modern GPUs.
 torch.set_float32_matmul_precision("medium")
@@ -59,7 +59,7 @@ logger = logging.getLogger(NAME)
 # =================================================================================================
 # Configuration
 # =================================================================================================
-class ExampleArguments(BaseSettings, extra="ignore", cli_parse_args=True, cli_prog_name="run"):
+class ExampleArguments(BaseSettings, extra="ignore", cli_parse_args=True):
     """CLI + config-file arguments for this example.
 
     Notes:
@@ -221,9 +221,11 @@ def main() -> None:
     # ---------------------------------------------------------------------------------------------
     set_name, batch, effective_bs = next(iter(dataset))
     collector = TraceCollector(TraceTree(), model.trace_specs)
-    max_steps = model.config.act_controller.halt_max_steps
+    step_batches = repeat(batch)
+    carry0 = model.eval_step_module.initial_carry(batch)
+
     with torch.no_grad():
-        for t, step in EvaluationLoop(model.loss_head, repeat(batch), max_steps=max_steps):
+        for t, step in StepLoop(model.eval_step_module, step_batches, carry0):
             collector.append(t, step)
     trace = collector.tree
     trace.finalize()
@@ -234,7 +236,6 @@ def main() -> None:
     print(f" - Local batch size: {batch['inputs'].shape[0]}")
     print(f" - Inputs shape: {tuple(batch['inputs'].shape)}")
     print(f" - Labels shape: {tuple(batch['labels'].shape)}")
-    print(f" - Max steps: {max_steps}")
     print()
 
     # ---------------------------------------------------------------------------------------------

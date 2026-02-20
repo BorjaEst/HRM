@@ -175,15 +175,13 @@ class ACTLossHead(nn.Module):
         return self.controller.initial_state(batch_sample)
 
     def forward(  # -------------------------------------------------------------------------------
-        self, batch: Batch, carry: ACTState,
-        **options,
+        self, batch: Batch, carry: ACTState
     ) -> Tuple[ACTStepOutput, ACTState, bool]:  # fmt: skip
         """Run one ACT step, returning the step loss, updated state, and metrics.
 
-        Callers must provide explicit flags to control halting, exploration, and
-        target computation; evaluation may still allow halting.
+        The controller encapsulates halting and exploration behavior.
         """
-        carry, outputs = self.controller.step(carry, batch, **options)
+        carry, outputs = self.controller.step(carry, batch)
         labels = carry.data["labels"]
 
         with torch.no_grad():
