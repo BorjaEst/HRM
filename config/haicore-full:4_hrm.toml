@@ -1,0 +1,44 @@
+# Default configuration for training the hierarchical reasoning model with ACT
+project_name = "hrm_sn"
+run_name = "recursive_reasoning.hrm_v1@Model"
+global_batch_size = 16
+epochs = 10
+
+[architecture]
+vocab_size = 6
+seq_length = 900
+
+[architecture.transformer_block]
+embedding_dim = 512
+num_heads = 8
+is_causal = false
+expansion = 4.0
+rms_norm_eps = 1e-5
+
+[architecture.reasoning_h]
+layers = 4
+cycles = 2
+
+[architecture.reasoning_l]
+layers = 4
+cycles = 2
+
+[act_controller]
+exploration_prob = 0.1
+halt_max_steps = 16
+
+[loss]
+function = "stablemax_cross_entropy"
+
+[optimizer]
+lr = 1.0e-4
+weight_decay = 0.1
+betas = [0.9, 0.95]
+
+[scheduler]
+warmup_steps = 2000
+min_ratio = 1.0
+
+[dataset]
+seed = 42
+dataset_path = "data/maze-30x30-hard-1k"
