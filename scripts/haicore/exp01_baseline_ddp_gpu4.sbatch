@@ -21,7 +21,7 @@ module load toolkit/nvidia-hpc-sdk/25.3
 cd "${SLURM_SUBMIT_DIR}"
 
 # Activate the workspace venv (workspace-installed libs)
-source .venv/bin/activate
+source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 
 # Set environment variables for optimal performance
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
