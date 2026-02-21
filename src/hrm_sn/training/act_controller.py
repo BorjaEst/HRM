@@ -207,7 +207,7 @@ class ACTController:
         )
 
     def step(  # ----------------------------------------------------------------------------------
-        self, state: ACTState, batch: Batch, 
+        self, state: ACTState, batch: Batch,
         allow_halt: bool = True, explore: bool = True,
     ) -> Tuple[ACTState, ACTOutput]:  # fmt: skip
         """Run one ACT step, this performs, in order:
@@ -236,6 +236,14 @@ class ACTController:
 
         state = ACTState(model_state=model_state, steps=steps, halted=done, data=data)
         output = ACTOutput(logits=logits, halt_logits=q_halt, continue_logits=q_continue, action=action)
+
+        # TD(0) bootstrap target for the continue head.
+        with torch.no_grad():
+            _, _, next_features = self.backbone(data["inputs"], model_state)
+            next_q_halt, next_q_continue = self.halt_head(next_features)
+        is_last_step = steps >= self._config.halt_max_steps
+        next_q = torch.where(is_last_step, next_q_halt, torch.maximum(next_q_halt, next_q_continue))
+        output.target_continue = torch.sigmoid(next_q)  # Sigmoid to convert logits to probabilities
 
         return state, output
 

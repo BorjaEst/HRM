@@ -170,40 +170,6 @@ def trace_fields() -> List[TraceField[StepContext]]:
 
 
 # =================================================================================================
-@dataclass
-class ModelState:
-    """Runtime state that can persist across batches.
-
-    The HRM training loop is stateful: a "carry" object produced by the loss head
-    (and ultimately by the controller/model) can be forwarded from one mini-batch
-    to the next. This enables partial reset / continuation semantics where some
-    examples halt while others continue.
-
-    Attributes:
-        carry:
-            Arbitrary nested structure representing recurrent/ACT state.
-        halt_logits:
-            Optional per-example logits for halting (shape `(batch,)`).
-        continue_logits:
-            Optional per-example logits for continuing (shape `(batch,)`).
-        steps:
-            Optional per-example step count (shape `(batch,)`).
-        step_id, batch_id, set_name:
-            Metadata for downstream logging/debugging.
-    """
-
-    carry: Any  # Model carry/state that persists across batches, set by the first batch
-    halt_logits: Optional[Tensor] = None  # Optional tensor (batch_size,) with halt logits
-    continue_logits: Optional[Tensor] = None  # Optional tensor (batch_size,) with continue logits
-    steps: Optional[Tensor] = None  # Optional tensor (batch_size,) with number of steps for each example
-
-    # Metadata
-    step_id: Optional[int] = None  # Optional step identifier
-    batch_id: Optional[int] = None  # Optional batch identifier
-    set_name: Optional[str] = None  # Optional dataset split name (e.g. "train", "test", etc.)
-
-
-# =================================================================================================
 class Model(L.LightningModule):
     """LightningModule wrapper for HRM v1 training.
 
@@ -239,7 +205,6 @@ class Model(L.LightningModule):
         # Manual optimization: one backward, explicit opt/scheduler steps (legacy parity).
         self.automatic_optimization = False
         self._train_carry = None
-        self._val_carry = None
 
         # Metrics are cloned for train/val to allow separate logging and state management.
         base_metrics = build_metrics()
@@ -262,24 +227,6 @@ class Model(L.LightningModule):
     def config(self) -> ModelConfig_HRM_V1:
         """Return the parsed configuration used by this module."""
         return self._config
-
-    def init_state(  # ----------------------------------------------------------------------------
-        self, batch: Batch,
-    ) -> ModelState:  # fmt: skip
-        """Create a fresh `ModelState` for a given batch.
-
-        This method is currently a thin shim and is kept for forward-compatibility
-        if/when state initialization depends on the batch payload or effective batch size.
-
-        Args:
-            batch: `(set_name, batch_dict, effective_bs)` tuple.
-
-        Returns:
-            A `ModelState` with `carry=None` and metadata populated.
-        """
-        set_name, batch_dict, effective_bs = batch
-        # TODO: properly use batch_dict and effective_bs if needed for state initialization
-        return ModelState(carry=None, set_name=set_name)
 
     def configure_optimizers(  # ------------------------------------------------------------------
         self,

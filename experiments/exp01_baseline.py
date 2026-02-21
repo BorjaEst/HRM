@@ -175,7 +175,10 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True):
 
     # ---------------------------------------------------------------------------------------------
     # Training control settings (passed as top-level settings for ease of CLI overrides)
-    epochs: int = Field(..., description="Total number of epochs to train.")
+    epochs: int = Field(
+        ...,
+        description="Total number of epochs to train.",
+    )
 
     # ---------------------------------------------------------------------------------------------
     # Core settings for model, data, and training configuration (passed as configs to modules)
