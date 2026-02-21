@@ -212,6 +212,25 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True):
     )
 
     # ---------------------------------------------------------------------------------------------
+    # Distributed training settings (explicitly passed to Lightning Trainer)
+    trainer_accelerator: Literal["auto", "gpu", "cpu"] = Field(
+        default="gpu",
+        description="Trainer accelerator setting. Use 'gpu' for HAICORE multi-GPU runs.",
+    )
+    trainer_strategy: Literal["auto", "ddp"] = Field(
+        default="ddp",
+        description="Trainer strategy setting. Use 'ddp' for SLURM multi-GPU runs.",
+    )
+    trainer_devices: int = Field(
+        default=1,
+        description="Number of devices per node for the Trainer (per process when using SLURM tasks).",
+    )
+    trainer_num_nodes: int = Field(
+        default=1,
+        description="Number of nodes for distributed training.",
+    )
+
+    # ---------------------------------------------------------------------------------------------
     # Checkpointing and evaluation settings (passed as kwargs to Trainer and Checkpoint callback)
     checkpoint_path: Optional[str] = Field(
         default=None,
@@ -247,6 +266,26 @@ class RunArguments(BaseSettings, extra="forbid", cli_parse_args=True):
 
 
 # =================================================================================================
+def _validate_global_batch_size(settings: RunArguments) -> None:
+    """Validate that global_batch_size is divisible by world_size for distributed training."""
+    slurm_world_size = int(os.environ.get("SLURM_NTASKS", "1"))
+    if os.environ.get("SLURM_JOB_ID"):
+        world_size = slurm_world_size
+    elif settings.trainer_strategy == "ddp":
+        world_size = settings.trainer_devices * settings.trainer_num_nodes
+    else:
+        world_size = 1
+
+    if world_size <= 0:
+        raise ValueError("World size must be a positive integer.")
+    if settings.global_batch_size % world_size != 0:
+        raise ValueError(
+            "global_batch_size must be divisible by world_size. "
+            f"Got global_batch_size={settings.global_batch_size}, world_size={world_size}."
+        )
+
+
+# =================================================================================================
 # Main Entrypoint
 # =================================================================================================
 if __name__ == "__main__":
@@ -254,6 +293,8 @@ if __name__ == "__main__":
     # CLI arguments override TOML values; Pydantic defaults fill in anything missing.
     defaults_from_path = tomllib.load(Path(CONFIGURATION_PATH).open("rb"))
     settings = RunArguments(**defaults_from_path)
+    strategy = None if settings.trainer_strategy == "auto" else settings.trainer_strategy
+    _validate_global_batch_size(settings)
 
     # Seed everything for reproducibility.
     seed_everything(settings.dataset.seed)
@@ -272,6 +313,10 @@ if __name__ == "__main__":
         logger=Logger(settings.logger) if settings.logger is not None else None,
         callbacks=callbacks_list if callbacks_list else None,
         # Lightning Trainer kwargs (extracted from config)
+        accelerator=settings.trainer_accelerator,
+        strategy=strategy,  # type: ignore
+        devices=settings.trainer_devices,
+        num_nodes=settings.trainer_num_nodes,
         max_steps=settings.max_steps,
         val_check_interval=settings.val_check_interval,
         limit_val_batches=settings.limit_val_batches,

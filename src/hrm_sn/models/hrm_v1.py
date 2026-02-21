@@ -397,8 +397,9 @@ class Model(L.LightningModule):
             raise ValueError("RolloutLoop did not yield any steps, cannot proceed with training step.")
         self._train_carry = step.carry
 
-        # Normalize by global effective batch size for DDP-safe scaling.
-        loss = step.outputs.loss / float(effective_bs)
+        # Normalize by local batch size; DDP averages gradients across ranks.
+        local_bs = int(batch_dict["inputs"].shape[0])
+        loss = _normalize_loss_for_backward(step.outputs.loss, local_bs=local_bs)
         self.manual_backward(loss)
 
         optimizers = self.optimizers()
@@ -411,9 +412,11 @@ class Model(L.LightningModule):
             sch.step()  # type: ignore
 
         update_metrics_from_step(self.train_metrics, step.outputs.metrics)
+        loss_gm = step.outputs.loss / float(effective_bs)
         if (self.global_step + 1) % self.trainer.log_every_n_steps == 0:  # type: ignore
             self.log_dict(self.train_metrics.compute(), on_step=True, on_epoch=False, logger=True)
         self.log("train/loss", loss.detach(), on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        self.log("train/loss_gm", loss_gm.detach(), on_step=True, on_epoch=False, logger=True)
 
         return {"loss": loss.detach(), "effective_bs": effective_bs}
 
@@ -448,10 +451,32 @@ class Model(L.LightningModule):
 
 
 # =================================================================================================
+def _normalize_loss_for_backward(  # --------------------------------------------------------------
+    total_loss: Tensor, local_bs: int,
+) -> Tensor:  # fmt: skip
+    """Normalize the total loss by the local batch size for distributed training.
+
+    In distributed training (e.g. DDP), each rank computes gradients on its local mini-batch.
+    To ensure that the overall gradient magnitudes are consistent regardless of the number of
+    devices, we normalize the loss by the local batch size (the number of examples processed
+    by this rank). DDP will then average the gradients across ranks, effectively normalizing by
+    the global batch size.
+
+    Args:
+        total_loss: The unnormalized loss computed for the current mini-batch (scalar tensor).
+        local_bs: The effective batch size for this mini-batch on the current rank (number of examples).
+
+    Returns:
+        The loss normalized by the local batch size, ready for backward().
+    """
+    if local_bs <= 0:
+        raise ValueError(f"local_bs must be positive, got {local_bs}.")
+    return total_loss / float(local_bs)
+
+
+# =================================================================================================
 def cosine_lr(  # ---------------------------------------------------------------------------------
-    step: int,
-    *,
-    base_lr: float, warmup: int, total: int, min_ratio: float,
+    step: int, base_lr: float, warmup: int, total: int, min_ratio: float,
 ) -> float:  # fmt: skip
     """Compute a warmup + cosine-decay learning rate multiplier.
 
