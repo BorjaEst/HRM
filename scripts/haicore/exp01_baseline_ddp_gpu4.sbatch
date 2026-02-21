@@ -31,6 +31,6 @@ export NCCL_ASYNC_ERROR_HANDLING=1
 srun --cpu-bind=cores \
     python experiments/exp01_baseline.py \
     --trainer_strategy=ddp \
-    --trainer_devices=1 \
+    --trainer_devices=4 \
     --trainer_num_nodes=1 \
     --trainer_accelerator=gpu
