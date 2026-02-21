@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:full:4
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=38
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --job-name=hrm-exp01
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
@@ -33,4 +33,7 @@ srun --cpu-bind=cores \
     --trainer_strategy=ddp \
     --trainer_devices=4 \
     --trainer_num_nodes=1 \
-    --trainer_accelerator=gpu
+    --trainer_accelerator=gpu \
+    --max_steps=200000 \
+    --val_check_interval=60 \
+    --log_every_n_steps=20 \
