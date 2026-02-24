@@ -297,9 +297,20 @@ class HRModel(nn.Module):
     ) -> None:  # fmt: skip
         """Initialize parameters and buffers.
 
-        Only model-owned buffers/heads are initialized here. Submodules (e.g.
-        attention/MLP) initialize themselves.
+        Matches legacy ``CastedEmbedding`` / ``CastedLinear`` initialization so that
+        the input embedding magnitude ``||x||`` and recurrent state magnitude ``||z_H||``
+        are comparable (~1:1 ratio at init), which is required for multi-step reasoning
+        dynamics to emerge during training.
+
+        Std formulas (truncated normal, legacy parity):
+            - Embeddings: ``std = 1 / sqrt(hidden_size)``  (= ``config.init_std``)
+            - lm_head:    ``std = 1 / sqrt(hidden_size)``  (fan_in = hidden_size)
+            - Reset vecs: ``std = 1``
         """
+        init_std = self.config.init_std  # 1 / sqrt(hidden_size)
+        trunc_normal_init_(self.embed_tokens.weight, std=init_std)
+        trunc_normal_init_(self.embed_pos.weight, std=init_std)
+        trunc_normal_init_(self.lm_head.weight, std=1.0 / math.sqrt(self.config.hidden_size))
         trunc_normal_init_(self.high_reset_vector, std=1)
         trunc_normal_init_(self.low_reset_vector, std=1)
 

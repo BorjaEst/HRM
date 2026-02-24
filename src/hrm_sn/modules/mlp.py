@@ -4,6 +4,7 @@ This module currently provides the feed-forward block used in HRM-style
 Transformer layers.
 """
 
+import math
 from typing import Optional
 
 import torch.nn.functional as F
@@ -11,7 +12,7 @@ from pydantic import BaseModel, Field
 from torch import Tensor, nn
 
 from hrm_sn.types import Device, Dtype
-from hrm_sn.utils import _find_multiple
+from hrm_sn.utils import _find_multiple, trunc_normal_init_
 
 
 # =================================================================================================
@@ -63,6 +64,17 @@ class SwiGLU(nn.Module):
         inter = _find_multiple(round(config.expansion * config.hidden_size * 2 / 3), 256)
         self.gate_up_proj = nn.Linear(config.hidden_size, inter * 2, bias=False, device=device, dtype=dtype)
         self.down_proj = nn.Linear(inter, config.hidden_size, bias=False, device=device, dtype=dtype)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:  # -------------------------------------------------------
+        """Initialize projection weights with truncated normal matching legacy ``CastedLinear``.
+
+        Std formulas (fan_in = input dimension of each projection):
+            - ``gate_up_proj``: ``std = 1 / sqrt(hidden_size)``
+            - ``down_proj``:    ``std = 1 / sqrt(inter)``  (recovered via ``in_features``)
+        """
+        trunc_normal_init_(self.gate_up_proj.weight, std=1.0 / math.sqrt(self._config.hidden_size))
+        trunc_normal_init_(self.down_proj.weight, std=1.0 / math.sqrt(self.down_proj.in_features))
 
     @property
     def config(self) -> MLPConfig:

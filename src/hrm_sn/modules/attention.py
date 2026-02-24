@@ -9,6 +9,7 @@ The implementation is intentionally small and shape-explicit since it is a core
 primitive used throughout the model.
 """
 
+import math
 from typing import Optional
 
 import torch.nn.functional as F
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from torch import Tensor, nn
 
 from hrm_sn.types import Device, Dtype
+from hrm_sn.utils import trunc_normal_init_
 
 
 # =================================================================================================
@@ -115,6 +117,17 @@ class Attention(nn.Module):
         self._qkv_proj_out_dim = self._qkv_head_count * config.head_dim
         self.in_proj = nn.Linear(config.embedding_dim, self._qkv_proj_out_dim, bias=False, device=device, dtype=dtype)
         self.out_proj = nn.Linear(config.output_size, config.embedding_dim, bias=False, device=device, dtype=dtype)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:  # -------------------------------------------------------
+        """Initialize projection weights with truncated normal matching legacy ``CastedLinear``.
+
+        Std formulas (fan_in = input dimension of each projection):
+            - ``in_proj``:  ``std = 1 / sqrt(embedding_dim)``
+            - ``out_proj``: ``std = 1 / sqrt(output_size)``
+        """
+        trunc_normal_init_(self.in_proj.weight, std=1.0 / math.sqrt(self._config.embedding_dim))
+        trunc_normal_init_(self.out_proj.weight, std=1.0 / math.sqrt(self._config.output_size))
 
     @property
     def config(self) -> AttentionConfig:
