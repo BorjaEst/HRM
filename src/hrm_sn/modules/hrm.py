@@ -310,7 +310,7 @@ class HRModel(nn.Module):
         init_std = self.config.init_std  # 1 / sqrt(hidden_size)
         trunc_normal_init_(self.embed_tokens.weight, std=init_std)
         trunc_normal_init_(self.embed_pos.weight, std=init_std)
-        trunc_normal_init_(self.lm_head.weight, std=1.0 / math.sqrt(self.config.hidden_size))
+        trunc_normal_init_(self.lm_head.weight, std=init_std)
         trunc_normal_init_(self.high_reset_vector, std=1)
         trunc_normal_init_(self.low_reset_vector, std=1)
 
